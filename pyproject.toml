@@ -1,0 +1,117 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "graphfocus"
+version = "0.1.0"
+description = "Turn any folder of code into a queryable knowledge graph. Multi-language AST extraction with plugin architecture and MCP server for AI tools."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "bamc300", email = "bamc300@users.noreply.github.com" },
+]
+maintainers = [
+    { name = "bamc300", email = "bamc300@users.noreply.github.com" },
+]
+keywords = [
+    "knowledge-graph", "code-analysis", "ast", "tree-sitter",
+    "graphrag", "community-detection", "leiden", "mcp",
+    "java", "python", "typescript", "react", "vue", "go", "kotlin",
+    "rust", "swift", "ruby", "php", "scala", "lua", "c", "cpp",
+    "dart", "r", "csharp", "sql", "plsql",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Documentation",
+]
+requires-python = ">=3.11"
+dependencies = [
+    # Graph
+    "networkx>=3.0",
+
+    # AST Parsing
+    "tree-sitter>=0.23",
+    "tree-sitter-python>=0.23",
+    "tree-sitter-java>=0.23",
+    "tree-sitter-c-sharp>=0.23",
+    "tree-sitter-typescript>=0.23",
+    "tree-sitter-javascript>=0.23",
+    "tree-sitter-go>=0.23",
+    "tree-sitter-kotlin>=1.0",
+    "tree-sitter-rust>=0.23",
+    "tree-sitter-ruby>=0.23",
+    "tree-sitter-php>=0.23",
+    "tree-sitter-swift>=0.7",
+    "tree-sitter-c>=0.23",
+    "tree-sitter-cpp>=0.23",
+    "tree-sitter-scala>=0.23",
+    "tree-sitter-lua>=0.4",
+
+    # CLI
+    "click>=8.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "websockets>=12.0",
+]
+semantic = [
+    "anthropic>=0.25",
+    "openai>=1.0",
+]
+community = [
+    "graspologic>=3.0",
+]
+ai = [
+    # MCP server so AI tools (Claude Desktop, Trae, Cursor, Windsurf) can
+    # query the graph directly instead of loading whole files.
+    "mcp[cli]>=1.0",
+]
+all = [
+    "graphfocus[api,semantic,community,ai]",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "httpx>=0.27",            # For testing FastAPI
+]
+
+[project.scripts]
+graphfocus = "graphfocus.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/bamc300/graphfocus"
+Repository = "https://github.com/bamc300/graphfocus"
+Issues = "https://github.com/bamc300/graphfocus/issues"
+
+[tool.setuptools.packages.find]
+include = ["graphfocus*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"

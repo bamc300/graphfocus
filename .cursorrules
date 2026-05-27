@@ -1,0 +1,23 @@
+# GraphFocus — Cursor Rules
+
+## Project: Multi-language code knowledge graph generator
+
+## Key patterns:
+- Extractor plugin pattern: inherit from LanguageExtractor in graphfocus/extractors/base.py
+- Use make_id() for deterministic node IDs
+- Every node needs: id, label, language, kind, source_file, source_location
+- Every edge needs: source, target, relation, confidence (EXTRACTED|INFERRED|AMBIGUOUS)
+- Tree-sitter for AST parsing, regex fallback for languages without grammar
+
+## File structure:
+- graphfocus/extractors/<language>_extractor.py — one per language
+- graphfocus/extractors/registry.py — auto-discovers extractors
+- graphfocus/detect/detector.py — file classification
+- graphfocus/graph/ — NetworkX graph building + Leiden clustering
+- graphfocus/api/ — FastAPI REST API
+- tests/test_<language>_extractor.py — tests per language
+- tests/fixtures/<language>/ — sample files per language
+
+## Tech: Python 3.11+, tree-sitter, NetworkX, graspologic, Click, FastAPI, ruff
+
+## Commands: make dev | make test | make lint | make serve
