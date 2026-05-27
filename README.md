@@ -206,6 +206,28 @@ make format   # ruff format
 make serve    # start the FastAPI server
 ```
 
+## Release
+
+Publishing to PyPI is automated via GitHub Actions and PyPI Trusted Publishing — no API tokens are stored in this repo.
+
+**One-time setup on pypi.org** (project owner only):
+1. Log in to https://pypi.org and go to the project (after the first manual upload, or use a pending publisher).
+2. *Manage → Publishing → Add a new publisher* → fill in:
+   - Owner: `bamc300`
+   - Repository name: `graphfocus`
+   - Workflow name: `publish.yml`
+   - Environment name: `pypi`
+
+**Each release**:
+```bash
+# 1. bump the version in pyproject.toml
+# 2. commit + tag
+git commit -am "chore: bump version to 0.2.0"
+git tag v0.2.0
+git push && git push --tags
+# 3. the publish.yml workflow runs automatically and uploads to PyPI
+```
+
 ## License
 
 MIT

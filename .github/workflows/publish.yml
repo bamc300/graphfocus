@@ -1,0 +1,48 @@
+name: Publish to PyPI
+
+# Fires when you push a tag like v0.1.0 (or run it manually from the
+# Actions tab). Uses PyPI Trusted Publishing — no API token is stored
+# in this repository's secrets. See the README's "Release" section for
+# the one-time PyPI configuration.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # OIDC token used to authenticate to PyPI as a Trusted Publisher.
+  id-token: write
+
+jobs:
+  build-and-publish:
+    name: Build wheel + sdist and publish
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/graphfocus
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Show what's about to be published
+        run: ls -la dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No `with: password:` line on purpose: Trusted Publishing uses
+        # the OIDC token granted via id-token:write above.
