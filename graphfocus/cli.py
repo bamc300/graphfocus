@@ -217,6 +217,68 @@ def path(source: str, target: str) -> None:
     console.print(f"[yellow]Path finding coming soon: {source} → {target}[/]")
 
 
+@main.command(name="serve-viz")
+@click.option("--port", "-p", default=8765, type=int,
+              help="Local port to serve on (default: 8765)")
+@click.option("--no-open", is_flag=True,
+              help="Don't auto-open the browser")
+@click.option("--output", "-o", type=click.Path(),
+              default="graphfocus-out",
+              help="Directory containing graph.html (default: graphfocus-out)")
+def serve_viz(port: int, no_open: bool, output: str) -> None:
+    """Serve the generated graph.html locally and open it in the browser.
+
+    Opening graph.html directly from disk (file://) fails in most modern
+    browsers because they refuse to create a WebGL context for local
+    files and block cross-origin script loads. This command runs a tiny
+    HTTP server scoped to the output directory so the page works.
+    """
+    import http.server
+    import socketserver
+    import threading
+    import webbrowser
+
+    out_dir = Path(output).resolve()
+    html_file = out_dir / "graph.html"
+    if not html_file.exists():
+        console.print(f"[red]No graph.html at {html_file}.[/]")
+        console.print("[yellow]Run 'graphfocus analyze .' first.[/]")
+        return
+
+    # Bind to localhost only so we don't expose the graph on the network.
+    handler = http.server.SimpleHTTPRequestHandler
+
+    class _Handler(handler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(out_dir), **kwargs)
+
+        def log_message(self, format: str, *args) -> None:  # noqa: A002, ARG002
+            # Silence the per-request access log; let stdout stay clean.
+            return
+
+    try:
+        server = socketserver.TCPServer(("127.0.0.1", port), _Handler)
+    except OSError as e:
+        console.print(f"[red]Could not bind 127.0.0.1:{port} — {e}[/]")
+        console.print("[yellow]Try a different --port[/]")
+        return
+
+    url = f"http://127.0.0.1:{port}/graph.html"
+    console.print(f"[bold green]Serving GraphFocus viz at {url}[/]")
+    console.print(f"[dim]Directory: {out_dir}[/]")
+    console.print("[dim]Press Ctrl+C to stop.[/]\n")
+
+    if not no_open:
+        threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped.[/]")
+    finally:
+        server.server_close()
+
+
 @main.command()
 @click.option("--host", default="0.0.0.0", help="Host to bind to")
 @click.option("--port", default=8000, help="Port to bind to")

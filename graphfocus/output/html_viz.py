@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import shutil
 from pathlib import Path
 
 from graphfocus.extractors.base import Edge, Node
@@ -136,17 +137,36 @@ def generate_html(
         },
     }
 
-    # ── Write data + html ─────────────────────────────────────────
+    # ── Write data + html + vendored JS libraries ────────────────
     data_path = output_path.with_name("graph-data.js")
     data_path.write_text(
         "window.__GRAPHFOCUS_DATA__ = " + json.dumps(payload, ensure_ascii=False) + ";\n",
         encoding="utf-8",
     )
 
+    _copy_vendor_assets(output_path.parent)
+
     output_path.write_text(
         _HTML_TEMPLATE.replace("__TITLE__", title),
         encoding="utf-8",
     )
+
+
+def _copy_vendor_assets(out_dir: Path) -> None:
+    """Copy bundled sigma + graphology next to graph.html.
+
+    Shipping the JS dependencies inside the wheel means the viz works
+    fully offline — no CDN fetch, no jsdelivr block by a corporate
+    proxy, no browser security policy preventing cross-origin script
+    loads from a file:// page.
+    """
+    vendor = Path(__file__).resolve().parent.parent / "vendor"
+    for name in ("sigma.min.js", "graphology.umd.min.js"):
+        src = vendor / name
+        if not src.is_file():
+            logger.warning("vendor asset missing: %s", src)
+            continue
+        shutil.copy2(src, out_dir / name)
 
 
 # ── internals ───────────────────────────────────────────────────────────────
@@ -401,10 +421,14 @@ _HTML_TEMPLATE = r"""<!doctype html>
   <div id="detail" class="detail-empty">Click a node to inspect.</div>
 </aside>
 
-<!-- Libraries: graphology (data structure) + Sigma.js v3 (WebGL renderer) -->
-<script src="https://cdn.jsdelivr.net/npm/graphology@0.25.4/dist/graphology.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/sigma@3.0.0/dist/sigma.min.js"></script>
-<!-- Data file — must be next to this HTML -->
+<!--
+  Libraries are shipped next to this HTML by graphfocus — no CDN, no
+  internet needed. Sigma.js v3 renders the graph in WebGL; graphology
+  is the in-memory graph data structure. If you move graph.html, also
+  move sigma.min.js, graphology.umd.min.js and graph-data.js with it.
+-->
+<script src="./graphology.umd.min.js"></script>
+<script src="./sigma.min.js"></script>
 <script src="./graph-data.js"></script>
 
 <script>

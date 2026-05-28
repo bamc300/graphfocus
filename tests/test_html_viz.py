@@ -47,22 +47,28 @@ def _read_payload(html_path):
 
 
 class TestHTMLViz:
-    def test_writes_both_files(self, tmp_path):
+    def test_writes_all_files(self, tmp_path):
         nodes, edges = _sample_graph()
         out = tmp_path / "viz.html"
         generate_html(nodes, edges, out)
         assert out.exists() and out.stat().st_size > 0
         assert (tmp_path / "graph-data.js").exists()
+        # v0.1.5: sigma + graphology are bundled, no CDN needed.
+        assert (tmp_path / "sigma.min.js").exists()
+        assert (tmp_path / "graphology.umd.min.js").exists()
 
-    def test_html_references_data_file_and_libraries(self, tmp_path):
+    def test_html_references_local_files_not_cdn(self, tmp_path):
         nodes, edges = _sample_graph()
         out = tmp_path / "viz.html"
         generate_html(nodes, edges, out)
         text = out.read_text(encoding="utf-8")
         assert "<!doctype html>" in text.lower()
         assert "graph-data.js" in text
-        assert "sigma" in text
-        assert "graphology" in text
+        assert "./sigma.min.js" in text
+        assert "./graphology.umd.min.js" in text
+        # The whole point of v0.1.5 is that we don't hit any CDN.
+        assert "cdn.jsdelivr.net" not in text
+        assert "unpkg.com" not in text
 
     def test_data_file_is_valid_json_payload(self, tmp_path):
         nodes, edges = _sample_graph()
