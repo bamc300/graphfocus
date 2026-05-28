@@ -101,6 +101,10 @@ def generate_html(
             "source_location": e.source_location,
         })
 
+    community_count = (
+        max(communities.values()) + 1 if communities else 1
+    )
+
     payload = {
         "title": title,
         "nodes": nodes_payload,
@@ -108,6 +112,7 @@ def generate_html(
         "languages": sorted(languages_seen),
         "kinds": sorted(kinds_seen),
         "confidences": sorted(confidences_seen),
+        "community_count": community_count,
         "language_colors": {
             lang: _LANGUAGE_COLORS.get(lang, _FALLBACK_COLOR)
             for lang in languages_seen
@@ -280,6 +285,15 @@ _HTML_TEMPLATE = r"""<!doctype html>
   <h1>GraphFocus</h1>
   <span class="stats" id="stats"></span>
   <span class="spacer"></span>
+  <label style="color:var(--muted);font-size:12px;">
+    Color by
+    <select id="color-mode" style="background:var(--panel-2);color:var(--text);
+        border:1px solid var(--border);border-radius:4px;padding:4px 8px;margin-left:6px;">
+      <option value="language" selected>Language</option>
+      <option value="kind">Kind</option>
+      <option value="community">Community</option>
+    </select>
+  </label>
   <input id="search" type="search" placeholder="Search nodes…" autocomplete="off" />
 </header>
 
@@ -417,9 +431,29 @@ _HTML_TEMPLATE = r"""<!doctype html>
       .on("drag", dragged)
       .on("end", dragEnd));
 
+  // ── Color palettes for the "Color by" selector ──────────────────────────
+  // 20-color categorical palette (Tableau-20) that cycles for unlimited
+  // distinct values; reused for kinds and communities.
+  const CATEGORICAL = [
+    "#4c78a8","#f58518","#e45756","#72b7b2","#54a24b","#eeca3b",
+    "#b279a2","#ff9da6","#9d755d","#bab0ac","#1f77b4","#aec7e8",
+    "#ffbb78","#98df8a","#d62728","#ff9896","#c5b0d5","#c49c94",
+    "#f7b6d2","#dbdb8d",
+  ];
+  const kindPalette = {};
+  DATA.kinds.forEach((k, i) => { kindPalette[k] = CATEGORICAL[i % CATEGORICAL.length]; });
+
+  function colorFor(d, mode) {
+    if (mode === "kind") return kindPalette[d.kind] || "#888";
+    if (mode === "community") {
+      return CATEGORICAL[(d.community || 0) % CATEGORICAL.length];
+    }
+    return d.color;  // default = language palette baked into the payload
+  }
+
   nodeSel.append("circle")
     .attr("r", radius)
-    .attr("fill", d => d.color);
+    .attr("fill", d => colorFor(d, "language"));
 
   nodeSel.append("title").text(d => `${d.label} (${d.kind})`);
 
@@ -480,6 +514,15 @@ _HTML_TEMPLATE = r"""<!doctype html>
     nodeSel.style("display", d => nodeVisible(d) ? null : "none");
     linkSel.style("display", d => linkVisible(d) ? null : "none");
   }
+
+  // ── Color-by selector ──────────────────────────────────────────────────
+  const colorModeSelect = document.getElementById("color-mode");
+  colorModeSelect.addEventListener("change", () => {
+    const mode = colorModeSelect.value;
+    nodeSel.select("circle")
+      .transition().duration(200)
+      .attr("fill", d => colorFor(d, mode));
+  });
 
   // ── Search ──────────────────────────────────────────────────────────────
   const searchInput = document.getElementById("search");

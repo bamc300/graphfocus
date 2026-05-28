@@ -120,6 +120,18 @@ def analyze(
         all_edges.extend(cross_edges)
         console.print(f"[green]✓ Linked {len(cross_edges)} cross-language edges[/]")
 
+    # Step 2c: Community detection (Leiden via igraph if installed).
+    # If igraph is missing this returns {node: 0 for all}, so callers stay
+    # consistent — the viz just won't have distinct community colors.
+    from graphfocus.graph.builder import build_graph
+    from graphfocus.graph.community import detect_communities
+
+    nx_graph = build_graph(all_nodes, all_edges)
+    communities = detect_communities(nx_graph)
+    distinct = len(set(communities.values()))
+    if distinct > 1:
+        console.print(f"[green]✓ Detected {distinct} communities[/]")
+
     # Step 3: Output
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -137,7 +149,11 @@ def analyze(
         from graphfocus.output.html_viz import generate_html
 
         html_path = config.output_dir / "graph.html"
-        generate_html(all_nodes, all_edges, html_path, title=config.input_path.name)
+        generate_html(
+            all_nodes, all_edges, html_path,
+            communities=communities,
+            title=config.input_path.name,
+        )
         console.print(f"[green]✓ Interactive viz saved to {html_path}[/]")
 
     if obsidian:

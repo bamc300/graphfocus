@@ -68,3 +68,30 @@ class TestHTMLViz:
         # communities is optional; passing it should not fail.
         generate_html(nodes, edges, out, communities={"mod_a": 0, "mod_a_user": 1})
         assert out.exists()
+
+    def test_color_by_selector_in_html(self, tmp_path):
+        nodes, edges = _sample_graph()
+        out = tmp_path / "viz.html"
+        generate_html(nodes, edges, out)
+        text = out.read_text(encoding="utf-8")
+        # The dropdown for switching color mode must be present.
+        assert 'id="color-mode"' in text
+        for opt in ("Language", "Kind", "Community"):
+            assert f">{opt}<" in text
+
+    def test_communities_propagate_to_payload(self, tmp_path):
+        nodes, edges = _sample_graph()
+        out = tmp_path / "viz.html"
+        communities = {"mod_a": 0, "mod_a_user": 0, "schema_users": 1}
+        generate_html(nodes, edges, out, communities=communities)
+        text = out.read_text(encoding="utf-8")
+
+        start = text.index('id="graph-data" type="application/json">')
+        start = text.index(">", start) + 1
+        end = text.index("</script>", start)
+        payload = json.loads(text[start:end])
+
+        assert payload["community_count"] == 2
+        by_id = {n["id"]: n for n in payload["nodes"]}
+        assert by_id["mod_a"]["community"] == 0
+        assert by_id["schema_users"]["community"] == 1
