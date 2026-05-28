@@ -12,7 +12,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from graphfocus.extractors.base import (
-    Edge, ExtractionResult, LanguageExtractor, Node, make_id,
+    Edge,
+    ExtractionResult,
+    LanguageExtractor,
+    Node,
+    make_id,
 )
 
 

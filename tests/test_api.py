@@ -6,7 +6,6 @@ opened. We monkeypatch the cwd so each test's outputs land in tmp_path.
 
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 

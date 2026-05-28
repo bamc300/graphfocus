@@ -78,7 +78,7 @@ class TestGraphStore:
         }
         graph_path.write_text(json.dumps(new), encoding="utf-8")
         # Force a mtime advance on systems with coarse mtime resolution.
-        import os, time
+        import os
         new_time = graph_path.stat().st_mtime + 2
         os.utime(graph_path, (new_time, new_time))
         store.ensure_loaded()

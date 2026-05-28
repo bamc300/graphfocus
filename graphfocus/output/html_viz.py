@@ -21,7 +21,6 @@ from pathlib import Path
 
 from graphfocus.extractors.base import Edge, Node
 
-
 # Stable color palette indexed by language name.
 _LANGUAGE_COLORS = {
     "python": "#3572A5",

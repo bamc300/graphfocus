@@ -30,7 +30,6 @@ from graphfocus.extractors.base import (
     make_id,
 )
 
-
 # Node types that mark a piece of JSX inside the AST.
 _JSX_NODE_TYPES = {
     "jsx_element",
@@ -154,10 +153,9 @@ class TypeScriptExtractor(LanguageExtractor):
                 decorators = _decorator_names(node)
                 meta = {"decorators": decorators} if decorators else {}
 
-                # Heritage (extends / implements)
+                # Heritage (extends / implements) — lives directly under
+                # class_declaration as a `class_heritage` child in the tsx grammar.
                 kind = "class"
-                heritage = node.child_by_field_name("body")  # find class_heritage sibling
-                # In TS the heritage lives as a child of class_declaration directly.
                 base_names: list[str] = []
                 impl_names: list[str] = []
                 for child in node.children:

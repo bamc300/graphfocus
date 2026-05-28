@@ -26,7 +26,6 @@ from graphfocus.extractors.base import (
     make_id,
 )
 
-
 _SPRING_ANNOTATIONS = {
     "Service", "Repository", "Controller", "RestController",
     "Component", "Configuration", "Bean",
@@ -126,9 +125,10 @@ class KotlinExtractor(LanguageExtractor):
             if not modifiers:
                 return False
             for child in modifiers.children:
-                if child.type == "class_modifier":
-                    if any(c.type == "data" for c in child.children):
-                        return True
+                if child.type == "class_modifier" and any(
+                    c.type == "data" for c in child.children
+                ):
+                    return True
             return False
 
         def _identifier_name(node) -> str | None:

@@ -47,14 +47,18 @@ class LLMExtractor:
             try:
                 import anthropic
                 self._client = anthropic.Anthropic()
-            except ImportError:
-                raise ImportError("Install anthropic: pip install 'graphfocus[semantic]'")
+            except ImportError as err:
+                raise ImportError(
+                    "Install anthropic: pip install 'graphfocus[semantic]'"
+                ) from err
         elif self.provider == "openai":
             try:
                 import openai
                 self._client = openai.OpenAI()
-            except ImportError:
-                raise ImportError("Install openai: pip install 'graphfocus[semantic]'")
+            except ImportError as err:
+                raise ImportError(
+                    "Install openai: pip install 'graphfocus[semantic]'"
+                ) from err
         else:
             raise ValueError(f"Unknown provider: {self.provider}")
 

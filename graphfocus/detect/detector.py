@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import os
 import re
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 
-class FileType(str, Enum):
+class FileType(StrEnum):
     """Classification of a source file."""
 
     CODE = "code"

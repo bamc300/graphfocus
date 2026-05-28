@@ -1,8 +1,6 @@
 """Tests for the file detector module."""
 
-from pathlib import Path
 
-import pytest
 
 from graphfocus.detect.detector import FileType, classify_file, detect_files
 

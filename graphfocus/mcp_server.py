@@ -22,10 +22,8 @@ import json
 import os
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-
 
 _DEFAULT_GRAPH_PATH = Path("graphfocus-out/graph.json")
 

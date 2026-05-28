@@ -106,6 +106,9 @@ include = ["graphfocus*"]
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+# Test fixtures contain deliberately "weird" code samples (unused imports,
+# nested classes, etc.) to exercise the extractors. Don't lint them.
+extend-exclude = ["tests/fixtures"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]

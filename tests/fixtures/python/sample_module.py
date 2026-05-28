@@ -1,8 +1,12 @@
 """Sample Python module for testing the Python extractor."""
 
 import os
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
+
+# Keep these references so linters don't remove the imports above — the
+# Python extractor's test suite relies on detecting them.
+_ = (os.getcwd, Path)
 
 
 class BaseModel:

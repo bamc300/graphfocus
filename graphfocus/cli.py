@@ -75,7 +75,8 @@ def analyze(
         cache_db = config.output_dir / ".cache.db"
         cache = ExtractionCache(cache_db)
 
-    from graphfocus.extractors.base import Edge as _Edge, Node as _Node  # noqa: E402
+    from graphfocus.extractors.base import Edge as _Edge  # noqa: E402
+    from graphfocus.extractors.base import Node as _Node
 
     for file_info in detection["files"]:
         file_path = Path(file_info["path"])
@@ -230,7 +231,7 @@ def mcp(graph_path: str | None, use_http: bool, host: str, port: int) -> None:
     README for the JSON snippet to add to each client's config.
     """
     try:
-        from graphfocus.mcp_server import run_stdio, run_http
+        from graphfocus.mcp_server import run_http, run_stdio
     except ImportError:
         console.print("[red]MCP SDK not installed. Run: pip install 'graphfocus[ai]'[/]")
         return

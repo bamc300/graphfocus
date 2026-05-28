@@ -20,6 +20,7 @@ delegation pattern is enough for the relationships we care about.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import tempfile
 from pathlib import Path
@@ -32,7 +33,6 @@ from graphfocus.extractors.base import (
     make_id,
 )
 from graphfocus.extractors.typescript_extractor import TypeScriptExtractor
-
 
 # Match a single <script ...>...</script> block. Re-runs to support
 # Vue's optional separate <script setup> alongside a normal <script>.
@@ -192,10 +192,8 @@ class VueExtractor(LanguageExtractor):
                 n.source_file = str(path)
             return result.nodes, result.edges, result.errors
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 tmp_path.unlink()
-            except OSError:
-                pass
 
 
 def _offset_location(loc: str | None, offset: int) -> str | None:

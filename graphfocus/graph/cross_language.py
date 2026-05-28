@@ -21,7 +21,6 @@ from collections.abc import Iterable
 
 from graphfocus.extractors.base import Edge, Node
 
-
 # Annotations / attributes that mean "this class maps to a DB table".
 _ENTITY_MARKERS = {"Entity", "Table", "MappedSuperclass"}
 

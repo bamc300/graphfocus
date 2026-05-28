@@ -17,7 +17,6 @@ from pathlib import Path
 
 from graphfocus.extractors.base import Edge, Node
 
-
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._\- ]+")
 
 

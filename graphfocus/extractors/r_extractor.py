@@ -16,9 +16,12 @@ import re
 from pathlib import Path
 
 from graphfocus.extractors.base import (
-    Edge, ExtractionResult, LanguageExtractor, Node, make_id,
+    Edge,
+    ExtractionResult,
+    LanguageExtractor,
+    Node,
+    make_id,
 )
-
 
 # library(dplyr), require(magrittr), requireNamespace("foo")
 _LIBRARY = re.compile(

@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 # ── Default output directory ──────────────────────────────────────────────────
 DEFAULT_OUTPUT_DIR = "graphfocus-out"
 
