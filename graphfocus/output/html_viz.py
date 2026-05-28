@@ -1,27 +1,39 @@
-"""Interactive HTML visualization generator.
+"""Interactive HTML visualization for graphs of any size.
 
-Produces a single self-contained HTML file with a D3.js force-directed graph.
-The graph data is embedded inline as JSON, so the file can be opened directly
-in a browser (no server required).
+We produce **two files** that work side-by-side from ``file://`` (no web
+server needed) and scale to hundreds of thousands of nodes:
 
-Features:
-  - Node color by language
-  - Node radius by degree
-  - Edge styling by confidence (EXTRACTED solid, INFERRED dashed, AMBIGUOUS dotted)
-  - Filter checkboxes: languages, kinds, confidence levels
-  - Search box that highlights matching nodes
-  - Click a node to see its details (with a vscode:// link to the source)
-  - Drag, zoom and pan
+  * ``graph.html``     — tiny shell (~15 KB). UI + Sigma.js + graphology
+                         loaded from CDN. Loads ``graph-data.js``.
+  * ``graph-data.js``  — the data, assigned to ``window.__GRAPHFOCUS_DATA__``.
+
+Why split and why not D3 anymore:
+
+  * D3 + SVG dies around 5 000 nodes (one DOM element per node).
+  * D3 force simulation runs every frame and saturates the CPU long
+    before the DOM does.
+  * Sigma.js renders to **WebGL** and comfortably handles 100 000+ nodes.
+  * Running the force layout server-side once with ``igraph`` is orders
+    of magnitude faster than running it in JavaScript every frame, and
+    the browser only has to render — no physics.
+
+For small graphs (< ~200 nodes) where ``igraph`` is unavailable we fall
+back to a simple circular layout so the file still renders.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import math
 from pathlib import Path
 
 from graphfocus.extractors.base import Edge, Node
 
-# Stable color palette indexed by language name.
+logger = logging.getLogger(__name__)
+
+
+# Stable per-language palette (kept identical to v0.1.2 for UX continuity).
 _LANGUAGE_COLORS = {
     "python": "#3572A5",
     "java": "#B07219",
@@ -38,6 +50,11 @@ _LANGUAGE_COLORS = {
     "swift": "#F05138",
     "cpp": "#F34B7D",
     "c": "#555555",
+    "scala": "#c22d40",
+    "vue": "#41b883",
+    "lua": "#000080",
+    "dart": "#00B4AB",
+    "r": "#198CE7",
 }
 _FALLBACK_COLOR = "#888888"
 
@@ -49,26 +66,25 @@ def generate_html(
     communities: dict[str, int] | None = None,
     title: str = "GraphFocus",
 ) -> None:
-    """Write an interactive HTML visualization of the graph.
+    """Write ``graph.html`` and ``graph-data.js`` next to each other.
 
-    Args:
-        nodes: extracted nodes
-        edges: extracted edges
-        output_path: where to write the .html file
-        communities: optional mapping node_id -> community id (from Leiden)
-        title: page title
+    ``output_path`` is the ``.html`` path the caller wants. The data file
+    is written to ``output_path.with_name("graph-data.js")``.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
     communities = communities or {}
 
-    # Compute node degree for sizing.
+    # ── Compute node degree for sizing ─────────────────────────────
     degree: dict[str, int] = {}
     for e in edges:
         degree[e.source] = degree.get(e.source, 0) + 1
         degree[e.target] = degree.get(e.target, 0) + 1
 
-    nodes_payload = []
+    # ── Pre-compute layout server-side ─────────────────────────────
+    positions = _compute_layout(nodes, edges)
+
+    # ── Build payload ──────────────────────────────────────────────
+    nodes_payload: list[dict] = []
     languages_seen: set[str] = set()
     kinds_seen: set[str] = set()
     for n in nodes:
@@ -76,6 +92,7 @@ def generate_html(
         kind = n.kind or "unknown"
         languages_seen.add(lang)
         kinds_seen.add(kind)
+        x, y = positions.get(n.id, (0.0, 0.0))
         nodes_payload.append({
             "id": n.id,
             "label": n.label,
@@ -86,9 +103,11 @@ def generate_html(
             "degree": degree.get(n.id, 0),
             "community": communities.get(n.id, 0),
             "color": _LANGUAGE_COLORS.get(lang, _FALLBACK_COLOR),
+            "x": x,
+            "y": y,
         })
 
-    edges_payload = []
+    edges_payload: list[dict] = []
     confidences_seen: set[str] = set()
     for e in edges:
         confidences_seen.add(e.confidence)
@@ -97,8 +116,6 @@ def generate_html(
             "target": e.target,
             "relation": e.relation,
             "confidence": e.confidence,
-            "source_file": e.source_file,
-            "source_location": e.source_location,
         })
 
     community_count = (
@@ -119,17 +136,112 @@ def generate_html(
         },
     }
 
-    html = _HTML_TEMPLATE.replace(
-        "__GRAPHFOCUS_DATA__",
-        json.dumps(payload, ensure_ascii=False),
-    ).replace("__TITLE__", title)
+    # ── Write data + html ─────────────────────────────────────────
+    data_path = output_path.with_name("graph-data.js")
+    data_path.write_text(
+        "window.__GRAPHFOCUS_DATA__ = " + json.dumps(payload, ensure_ascii=False) + ";\n",
+        encoding="utf-8",
+    )
 
-    output_path.write_text(html, encoding="utf-8")
+    output_path.write_text(
+        _HTML_TEMPLATE.replace("__TITLE__", title),
+        encoding="utf-8",
+    )
 
 
-# Self-contained HTML + JS. D3.js v7 is loaded from a CDN.
-# The data is injected via the __GRAPHFOCUS_DATA__ placeholder.
+# ── internals ───────────────────────────────────────────────────────────────
+
+
+def _compute_layout(
+    nodes: list[Node],
+    edges: list[Edge],
+) -> dict[str, tuple[float, float]]:
+    """Return a node-id -> (x, y) mapping, normalized to [0, 1000].
+
+    Strategy:
+      * If ``igraph`` is installed, use a force-directed layout. For very
+        large graphs we use DRL (designed for huge graphs); for medium
+        ones we use Fruchterman-Reingold (nicer aesthetics).
+      * Otherwise fall back to a circle layout so the file still renders.
+    """
+    n = len(nodes)
+    if n == 0:
+        return {}
+
+    node_ids = [node.id for node in nodes]
+    index_of = {nid: i for i, nid in enumerate(node_ids)}
+
+    try:
+        import igraph as ig
+    except ImportError:
+        logger.info("igraph not installed; using fallback circular layout.")
+        return _circle_layout(node_ids)
+
+    try:
+        ig_edges = [
+            (index_of[e.source], index_of[e.target])
+            for e in edges
+            if e.source in index_of and e.target in index_of
+        ]
+        h = ig.Graph(n=n, edges=ig_edges, directed=False)
+
+        if n > 3000:
+            layout = h.layout_drl()
+        elif n > 500:
+            layout = h.layout_fruchterman_reingold(niter=80)
+        else:
+            layout = h.layout_fruchterman_reingold(niter=200)
+
+        coords = list(layout.coords)
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(f"Layout computation failed ({exc}); using circle.")
+        return _circle_layout(node_ids)
+
+    return _normalize(node_ids, coords)
+
+
+def _normalize(
+    node_ids: list[str],
+    coords: list[tuple[float, float]],
+) -> dict[str, tuple[float, float]]:
+    """Normalize layout coords into the [0, 1000] x [0, 1000] box."""
+    if not coords:
+        return {}
+    xs = [c[0] for c in coords]
+    ys = [c[1] for c in coords]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    range_x = (max_x - min_x) or 1.0
+    range_y = (max_y - min_y) or 1.0
+    return {
+        nid: (
+            (coords[i][0] - min_x) / range_x * 1000.0,
+            (coords[i][1] - min_y) / range_y * 1000.0,
+        )
+        for i, nid in enumerate(node_ids)
+    }
+
+
+def _circle_layout(node_ids: list[str]) -> dict[str, tuple[float, float]]:
+    """Last-resort layout: place every node evenly around a circle."""
+    n = len(node_ids)
+    if n == 0:
+        return {}
+    out: dict[str, tuple[float, float]] = {}
+    for i, nid in enumerate(node_ids):
+        angle = 2 * math.pi * i / n
+        out[nid] = (500 + 450 * math.cos(angle), 500 + 450 * math.sin(angle))
+    return out
+
+
+# ── HTML template ───────────────────────────────────────────────────────────
+
+
 _HTML_TEMPLATE = r"""<!doctype html>
+<!--
+  Generated by GraphFocus. This file expects ``graph-data.js`` to sit
+  next to it. If you move the .html, move the .js too.
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8" />
@@ -151,7 +263,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
     color: var(--text);
     font: 13px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
     display: grid;
-    grid-template-columns: 280px 1fr 320px;
+    grid-template-columns: 260px 1fr 300px;
     grid-template-rows: 48px 1fr;
     grid-template-areas:
       "header header header"
@@ -159,56 +271,42 @@ _HTML_TEMPLATE = r"""<!doctype html>
   }
   header {
     grid-area: header;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 0 16px;
+    display: flex; align-items: center; gap: 14px;
+    padding: 0 14px;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
   }
-  header h1 {
-    margin: 0;
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-  }
+  header h1 { margin: 0; font-size: 14px; font-weight: 600; }
   header .stats { color: var(--muted); font-size: 12px; }
   header .stats b { color: var(--text); }
   header .spacer { flex: 1; }
-  header input[type="search"] {
-    background: var(--panel-2);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 6px 10px;
-    width: 240px;
-    outline: none;
+  header select, header input[type="search"] {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 5px 8px; outline: none;
   }
-  header input[type="search"]:focus { border-color: var(--accent); }
+  header input[type="search"] { width: 220px; }
+  header select:focus, header input:focus { border-color: var(--accent); }
   aside.left, aside.right {
     background: var(--panel);
-    border-right: 1px solid var(--border);
     overflow-y: auto;
     padding: 12px;
   }
-  aside.right { border-right: 0; border-left: 1px solid var(--border); grid-area: right; }
-  aside.left { grid-area: left; }
+  aside.left { grid-area: left; border-right: 1px solid var(--border); }
+  aside.right { grid-area: right; border-left: 1px solid var(--border); }
   main { grid-area: main; position: relative; overflow: hidden; }
+  #sigma-container { position: absolute; inset: 0; }
   .panel-title {
-    text-transform: uppercase;
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    color: var(--muted);
+    text-transform: uppercase; font-size: 11px;
+    letter-spacing: 0.08em; color: var(--muted);
     margin: 14px 0 6px;
   }
   .panel-title:first-child { margin-top: 0; }
-  .filter-list { display: flex; flex-direction: column; gap: 4px; }
+  .filter-list { display: flex; flex-direction: column; gap: 2px; }
   .filter-row {
     display: flex; align-items: center; gap: 8px;
-    padding: 4px 6px;
-    border-radius: 4px;
-    cursor: pointer;
-    user-select: none;
+    padding: 4px 6px; border-radius: 4px;
+    cursor: pointer; user-select: none;
   }
   .filter-row:hover { background: var(--panel-2); }
   .filter-row .swatch {
@@ -216,79 +314,56 @@ _HTML_TEMPLATE = r"""<!doctype html>
     border: 1px solid rgba(255,255,255,0.15);
     flex-shrink: 0;
   }
-  .filter-row .count { color: var(--muted); margin-left: auto; font-size: 11px; }
-  .filter-row.disabled { opacity: 0.4; }
+  .filter-row .count {
+    color: var(--muted); margin-left: auto; font-size: 11px;
+  }
   .toolbar { display: flex; gap: 6px; flex-wrap: wrap; }
   .toolbar button {
-    background: var(--panel-2);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 5px 10px;
-    cursor: pointer;
-    font-size: 12px;
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 5px 10px; cursor: pointer; font-size: 12px;
   }
   .toolbar button:hover { border-color: var(--accent); }
-  svg { width: 100%; height: 100%; display: block; cursor: grab; }
-  svg:active { cursor: grabbing; }
-  .node circle { stroke: rgba(255,255,255,0.5); stroke-width: 1.2; }
-  .node text {
-    fill: var(--text);
-    font-size: 10px;
-    pointer-events: none;
-    text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.9);
-  }
-  .node.dimmed { opacity: 0.08; }
-  .node.match circle { stroke: #fff; stroke-width: 2.5; }
-  .link {
-    stroke: #4d5566;
-    stroke-opacity: 0.55;
-  }
-  .link.confidence-INFERRED { stroke-dasharray: 4 3; }
-  .link.confidence-AMBIGUOUS { stroke-dasharray: 1 3; }
-  .link.dimmed { stroke-opacity: 0.05; }
-  .tooltip {
-    position: absolute;
-    background: var(--panel-2);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 6px 8px;
-    font-size: 12px;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.1s;
-    max-width: 320px;
-    z-index: 10;
-  }
   .detail-empty { color: var(--muted); font-style: italic; padding: 8px 0; }
   .detail-row { margin: 6px 0; }
-  .detail-row .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .detail-row .k {
+    color: var(--muted); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
   .detail-row .v { color: var(--text); word-break: break-word; }
-  .detail-row .v code { background: var(--panel-2); padding: 2px 4px; border-radius: 3px; font-size: 12px; }
+  .detail-row .v code {
+    background: var(--panel-2); padding: 2px 4px;
+    border-radius: 3px; font-size: 12px;
+  }
   .detail-row a { color: var(--accent); text-decoration: none; }
   .detail-row a:hover { text-decoration: underline; }
-  .neighbors li { list-style: none; padding: 3px 0; border-bottom: 1px solid var(--border); }
-  .neighbors li .rel { color: var(--muted); font-size: 11px; margin-right: 6px; }
-  .legend-line { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 11px; color: var(--muted); }
-  .legend-line .line {
-    display: inline-block;
-    width: 28px; height: 0;
-    border-top: 1.5px solid #4d5566;
+  .neighbors li {
+    list-style: none; padding: 3px 0;
+    border-bottom: 1px solid var(--border);
   }
-  .legend-line .line.INFERRED { border-top-style: dashed; }
-  .legend-line .line.AMBIGUOUS { border-top-style: dotted; }
+  .neighbors li .rel {
+    color: var(--muted); font-size: 11px; margin-right: 6px;
+  }
+  .legend-line {
+    display: flex; align-items: center; gap: 8px;
+    padding: 3px 0; font-size: 11px; color: var(--muted);
+  }
+  #loading {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg); color: var(--muted);
+    font-size: 14px; z-index: 100;
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>GraphFocus</h1>
-  <span class="stats" id="stats"></span>
+  <span class="stats" id="stats">loading…</span>
   <span class="spacer"></span>
   <label style="color:var(--muted);font-size:12px;">
     Color by
-    <select id="color-mode" style="background:var(--panel-2);color:var(--text);
-        border:1px solid var(--border);border-radius:4px;padding:4px 8px;margin-left:6px;">
+    <select id="color-mode">
       <option value="language" selected>Language</option>
       <option value="kind">Kind</option>
       <option value="community">Community</option>
@@ -309,22 +384,16 @@ _HTML_TEMPLATE = r"""<!doctype html>
   <div class="panel-title">Confidence</div>
   <div class="filter-list" id="filter-confidence"></div>
 
-  <div class="panel-title">Edge legend</div>
-  <div class="legend-line"><span class="line"></span> EXTRACTED</div>
-  <div class="legend-line"><span class="line INFERRED"></span> INFERRED</div>
-  <div class="legend-line"><span class="line AMBIGUOUS"></span> AMBIGUOUS</div>
-
   <div class="panel-title">View</div>
   <div class="toolbar">
     <button id="fit">Fit</button>
-    <button id="reheat">Reheat</button>
-    <button id="freeze">Toggle pin</button>
+    <button id="reset">Reset filters</button>
   </div>
 </aside>
 
 <main>
-  <svg id="graph"></svg>
-  <div class="tooltip" id="tooltip"></div>
+  <div id="sigma-container"></div>
+  <div id="loading">Loading graph…</div>
 </main>
 
 <aside class="right">
@@ -332,108 +401,22 @@ _HTML_TEMPLATE = r"""<!doctype html>
   <div id="detail" class="detail-empty">Click a node to inspect.</div>
 </aside>
 
-<script src="https://d3js.org/d3.v7.min.js"></script>
-<script id="graph-data" type="application/json">__GRAPHFOCUS_DATA__</script>
+<!-- Libraries: graphology (data structure) + Sigma.js v3 (WebGL renderer) -->
+<script src="https://cdn.jsdelivr.net/npm/graphology@0.25.4/dist/graphology.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sigma@3.0.0/dist/sigma.min.js"></script>
+<!-- Data file — must be next to this HTML -->
+<script src="./graph-data.js"></script>
+
 <script>
 (function () {
-  const DATA = JSON.parse(document.getElementById("graph-data").textContent);
-
-  // Build mutable arrays — d3 force mutates objects in place.
-  const nodesById = new Map();
-  const nodes = DATA.nodes.map(n => {
-    const copy = Object.assign({}, n);
-    nodesById.set(n.id, copy);
-    return copy;
-  });
-  const links = DATA.edges
-    .filter(e => nodesById.has(e.source) && nodesById.has(e.target))
-    .map(e => ({
-      source: e.source,
-      target: e.target,
-      relation: e.relation,
-      confidence: e.confidence,
-    }));
-
-  document.getElementById("stats").innerHTML =
-    `<b>${nodes.length}</b> nodes · <b>${links.length}</b> edges · ` +
-    `<b>${DATA.languages.length}</b> languages`;
-
-  // ── Filter UI ───────────────────────────────────────────────────────────
-  const enabled = {
-    language: new Set(DATA.languages),
-    kind: new Set(DATA.kinds),
-    confidence: new Set(DATA.confidences),
-  };
-
-  function buildFilterUI(containerId, key, items, colorFn) {
-    const container = document.getElementById(containerId);
-    container.innerHTML = "";
-    const counts = {};
-    if (key === "language" || key === "kind") {
-      for (const n of nodes) counts[n[key]] = (counts[n[key]] || 0) + 1;
-    } else if (key === "confidence") {
-      for (const l of links) counts[l.confidence] = (counts[l.confidence] || 0) + 1;
-    }
-    for (const item of items) {
-      const row = document.createElement("label");
-      row.className = "filter-row";
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = true;
-      cb.addEventListener("change", () => {
-        if (cb.checked) enabled[key].add(item);
-        else enabled[key].delete(item);
-        updateVisibility();
-      });
-      const swatch = document.createElement("span");
-      swatch.className = "swatch";
-      swatch.style.background = colorFn(item);
-      const label = document.createElement("span");
-      label.textContent = item;
-      const count = document.createElement("span");
-      count.className = "count";
-      count.textContent = counts[item] || 0;
-      row.appendChild(cb);
-      row.appendChild(swatch);
-      row.appendChild(label);
-      row.appendChild(count);
-      container.appendChild(row);
-    }
+  const DATA = window.__GRAPHFOCUS_DATA__;
+  if (!DATA) {
+    document.getElementById("loading").textContent =
+      "Could not load graph-data.js (it must sit next to graph.html).";
+    return;
   }
 
-  buildFilterUI("filter-languages", "language", DATA.languages,
-    l => DATA.language_colors[l] || "#888");
-  buildFilterUI("filter-kinds", "kind", DATA.kinds, () => "#666");
-  buildFilterUI("filter-confidence", "confidence", DATA.confidences, () => "#666");
-
-  // ── SVG setup ───────────────────────────────────────────────────────────
-  const svg = d3.select("#graph");
-  const tooltip = d3.select("#tooltip");
-  const root = svg.append("g");
-  const linkLayer = root.append("g").attr("class", "links");
-  const nodeLayer = root.append("g").attr("class", "nodes");
-
-  const zoom = d3.zoom().scaleExtent([0.1, 8]).on("zoom", evt => {
-    root.attr("transform", evt.transform);
-  });
-  svg.call(zoom);
-
-  const radius = d => Math.max(4, Math.min(14, 4 + Math.sqrt(d.degree || 0) * 1.4));
-
-  const linkSel = linkLayer.selectAll("line").data(links).join("line")
-    .attr("class", d => `link confidence-${d.confidence}`)
-    .attr("stroke-width", 1);
-
-  const nodeSel = nodeLayer.selectAll("g.node").data(nodes, d => d.id).join("g")
-    .attr("class", "node")
-    .call(d3.drag()
-      .on("start", dragStart)
-      .on("drag", dragged)
-      .on("end", dragEnd));
-
-  // ── Color palettes for the "Color by" selector ──────────────────────────
-  // 20-color categorical palette (Tableau-20) that cycles for unlimited
-  // distinct values; reused for kinds and communities.
+  // ── 20-color palette reused for kinds and communities ────────────────
   const CATEGORICAL = [
     "#4c78a8","#f58518","#e45756","#72b7b2","#54a24b","#eeca3b",
     "#b279a2","#ff9da6","#9d755d","#bab0ac","#1f77b4","#aec7e8",
@@ -443,184 +426,260 @@ _HTML_TEMPLATE = r"""<!doctype html>
   const kindPalette = {};
   DATA.kinds.forEach((k, i) => { kindPalette[k] = CATEGORICAL[i % CATEGORICAL.length]; });
 
-  function colorFor(d, mode) {
-    if (mode === "kind") return kindPalette[d.kind] || "#888";
+  function colorOf(attrs, mode) {
+    if (mode === "kind") return kindPalette[attrs.kind] || "#888";
     if (mode === "community") {
-      return CATEGORICAL[(d.community || 0) % CATEGORICAL.length];
+      return CATEGORICAL[(attrs.community || 0) % CATEGORICAL.length];
     }
-    return d.color;  // default = language palette baked into the payload
+    return DATA.language_colors[attrs.language] || "#888";
   }
 
-  nodeSel.append("circle")
-    .attr("r", radius)
-    .attr("fill", d => colorFor(d, "language"));
+  // ── Build the graphology graph ──────────────────────────────────────
+  const graph = new graphology.Graph();
+  const ids = new Set();
 
-  nodeSel.append("title").text(d => `${d.label} (${d.kind})`);
-
-  nodeSel.append("text")
-    .attr("dx", d => radius(d) + 3)
-    .attr("dy", "0.32em")
-    .text(d => d.label.length > 22 ? d.label.slice(0, 21) + "…" : d.label);
-
-  nodeSel.on("mouseover", (evt, d) => {
-    tooltip.html(
-      `<b>${escapeHtml(d.label)}</b><br>` +
-      `<small>${escapeHtml(d.kind)} · ${escapeHtml(d.language)}</small>` +
-      (d.source_file ? `<br><small>${escapeHtml(shorten(d.source_file))}${d.source_location ? ":" + escapeHtml(d.source_location) : ""}</small>` : "")
-    );
-    tooltip.style("opacity", 1);
-  })
-  .on("mousemove", evt => {
-    tooltip.style("left", (evt.clientX + 12) + "px").style("top", (evt.clientY + 12) + "px");
-  })
-  .on("mouseout", () => tooltip.style("opacity", 0))
-  .on("click", (evt, d) => selectNode(d));
-
-  // ── Force simulation ────────────────────────────────────────────────────
-  const sim = d3.forceSimulation(nodes)
-    .force("link", d3.forceLink(links).id(d => d.id).distance(60).strength(0.6))
-    .force("charge", d3.forceManyBody().strength(-180))
-    .force("center", d3.forceCenter(0, 0))
-    .force("collide", d3.forceCollide(d => radius(d) + 3))
-    .on("tick", ticked);
-
-  function ticked() {
-    linkSel
-      .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
-      .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
-    nodeSel.attr("transform", d => `translate(${d.x},${d.y})`);
+  // Node sizes scale with degree (sqrt to keep huge hubs from dominating).
+  for (const n of DATA.nodes) {
+    if (ids.has(n.id)) continue;
+    ids.add(n.id);
+    graph.addNode(n.id, {
+      label: n.label,
+      x: n.x,
+      y: n.y,
+      size: Math.max(2, Math.min(14, 2 + Math.sqrt(n.degree || 0))),
+      color: colorOf(n, "language"),
+      // Keep original attrs accessible via the node data.
+      language: n.language,
+      kind: n.kind,
+      community: n.community || 0,
+      degree: n.degree || 0,
+      source_file: n.source_file,
+      source_location: n.source_location,
+    });
   }
 
-  function dragStart(evt, d) {
-    if (!evt.active) sim.alphaTarget(0.3).restart();
-    d.fx = d.x; d.fy = d.y;
-  }
-  function dragged(evt, d) { d.fx = evt.x; d.fy = evt.y; }
-  function dragEnd(evt, d) {
-    if (!evt.active) sim.alphaTarget(0);
-    if (!pinning) { d.fx = null; d.fy = null; }
-  }
-
-  // ── Visibility / filters ────────────────────────────────────────────────
-  function nodeVisible(n) {
-    return enabled.language.has(n.language) && enabled.kind.has(n.kind);
-  }
-  function linkVisible(l) {
-    return enabled.confidence.has(l.confidence) &&
-           nodeVisible(typeof l.source === "object" ? l.source : nodesById.get(l.source)) &&
-           nodeVisible(typeof l.target === "object" ? l.target : nodesById.get(l.target));
-  }
-  function updateVisibility() {
-    nodeSel.style("display", d => nodeVisible(d) ? null : "none");
-    linkSel.style("display", d => linkVisible(d) ? null : "none");
+  let droppedEdges = 0;
+  for (const e of DATA.edges) {
+    if (!ids.has(e.source) || !ids.has(e.target)) { droppedEdges++; continue; }
+    try {
+      graph.addEdge(e.source, e.target, {
+        size: 0.4,
+        color: "rgba(170,170,180,0.45)",
+        relation: e.relation,
+        confidence: e.confidence,
+      });
+    } catch (_) {
+      // graphology disallows parallel edges by default; ignore extras.
+    }
   }
 
-  // ── Color-by selector ──────────────────────────────────────────────────
-  const colorModeSelect = document.getElementById("color-mode");
-  colorModeSelect.addEventListener("change", () => {
-    const mode = colorModeSelect.value;
-    nodeSel.select("circle")
-      .transition().duration(200)
-      .attr("fill", d => colorFor(d, mode));
+  document.getElementById("stats").innerHTML =
+    `<b>${graph.order}</b> nodes · <b>${graph.size}</b> edges · ` +
+    `<b>${DATA.languages.length}</b> languages` +
+    (droppedEdges ? ` · <span style="color:#c66">${droppedEdges} orphan edges</span>` : "");
+
+  // ── Filter state ────────────────────────────────────────────────────
+  const enabled = {
+    language: new Set(DATA.languages),
+    kind: new Set(DATA.kinds),
+    confidence: new Set(DATA.confidences),
+  };
+  let colorMode = "language";
+  let highlight = new Set();          // search match ids
+  let highlightOn = false;
+
+  function buildFilterUI(containerId, key, items, paletteFn) {
+    const container = document.getElementById(containerId);
+    container.innerHTML = "";
+    const counts = {};
+    if (key === "language") {
+      for (const n of DATA.nodes) counts[n.language] = (counts[n.language] || 0) + 1;
+    } else if (key === "kind") {
+      for (const n of DATA.nodes) counts[n.kind] = (counts[n.kind] || 0) + 1;
+    } else if (key === "confidence") {
+      for (const e of DATA.edges) counts[e.confidence] = (counts[e.confidence] || 0) + 1;
+    }
+    for (const item of items) {
+      const row = document.createElement("label");
+      row.className = "filter-row";
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.checked = true;
+      cb.addEventListener("change", () => {
+        if (cb.checked) enabled[key].add(item);
+        else enabled[key].delete(item);
+        renderer.refresh();
+      });
+      const swatch = document.createElement("span");
+      swatch.className = "swatch";
+      swatch.style.background = paletteFn(item);
+      const label = document.createElement("span");
+      label.textContent = item;
+      const count = document.createElement("span");
+      count.className = "count";
+      count.textContent = counts[item] || 0;
+      row.appendChild(cb); row.appendChild(swatch);
+      row.appendChild(label); row.appendChild(count);
+      container.appendChild(row);
+    }
+  }
+
+  buildFilterUI("filter-languages", "language", DATA.languages,
+    l => DATA.language_colors[l] || "#888");
+  buildFilterUI("filter-kinds", "kind", DATA.kinds, k => kindPalette[k] || "#888");
+  buildFilterUI("filter-confidence", "confidence", DATA.confidences, () => "#666");
+
+  // ── Sigma renderer ──────────────────────────────────────────────────
+  const container = document.getElementById("sigma-container");
+  const renderer = new Sigma(graph, container, {
+    renderEdgeLabels: false,
+    labelDensity: 0.07,
+    labelGridCellSize: 60,
+    labelRenderedSizeThreshold: 8,
+    minCameraRatio: 0.05,
+    maxCameraRatio: 20,
+    defaultEdgeColor: "rgba(170,170,180,0.4)",
   });
 
-  // ── Search ──────────────────────────────────────────────────────────────
+  // Hide the loading screen once Sigma has done the first paint.
+  requestAnimationFrame(() => {
+    document.getElementById("loading").style.display = "none";
+  });
+
+  // Reducers — Sigma calls these per node/edge each frame and we can
+  // override attrs based on the current filter/color state.
+  renderer.setSetting("nodeReducer", (id, attrs) => {
+    const visible =
+      enabled.language.has(attrs.language) &&
+      enabled.kind.has(attrs.kind);
+    if (!visible) return { ...attrs, hidden: true };
+
+    let color = colorOf(attrs, colorMode);
+    if (highlightOn && !highlight.has(id)) {
+      color = "rgba(180,180,180,0.15)";
+    }
+    return { ...attrs, color };
+  });
+
+  renderer.setSetting("edgeReducer", (id, attrs) => {
+    if (!enabled.confidence.has(attrs.confidence)) {
+      return { ...attrs, hidden: true };
+    }
+    const [s, t] = graph.extremities(id);
+    const ns = graph.getNodeAttributes(s);
+    const nt = graph.getNodeAttributes(t);
+    if (!enabled.language.has(ns.language) || !enabled.kind.has(ns.kind) ||
+        !enabled.language.has(nt.language) || !enabled.kind.has(nt.kind)) {
+      return { ...attrs, hidden: true };
+    }
+    return attrs;
+  });
+
+  // ── Color-by selector ──────────────────────────────────────────────
+  document.getElementById("color-mode").addEventListener("change", (evt) => {
+    colorMode = evt.target.value;
+    renderer.refresh();
+  });
+
+  // ── Search ─────────────────────────────────────────────────────────
   const searchInput = document.getElementById("search");
   searchInput.addEventListener("input", () => {
     const q = searchInput.value.trim().toLowerCase();
     if (!q) {
-      nodeSel.classed("dimmed", false).classed("match", false);
-      linkSel.classed("dimmed", false);
-      return;
-    }
-    const matches = new Set();
-    nodes.forEach(n => {
-      if (n.label.toLowerCase().includes(q) || n.id.toLowerCase().includes(q)) matches.add(n.id);
-    });
-    nodeSel.classed("match", d => matches.has(d.id))
-           .classed("dimmed", d => !matches.has(d.id));
-    linkSel.classed("dimmed", d => {
-      const s = typeof d.source === "object" ? d.source.id : d.source;
-      const t = typeof d.target === "object" ? d.target.id : d.target;
-      return !(matches.has(s) || matches.has(t));
-    });
-  });
-
-  // ── Selection / details panel ───────────────────────────────────────────
-  function selectNode(d) {
-    const detail = document.getElementById("detail");
-    const neighbors = links.filter(l => {
-      const s = typeof l.source === "object" ? l.source.id : l.source;
-      const t = typeof l.target === "object" ? l.target.id : l.target;
-      return s === d.id || t === d.id;
-    });
-    const fileLink = d.source_file
-      ? `<a href="vscode://file/${encodeURI(d.source_file)}${d.source_location ? ':' + d.source_location.replace(/^L/, '') : ''}" target="_blank">${escapeHtml(shorten(d.source_file))}${d.source_location ? ":" + escapeHtml(d.source_location) : ""}</a>`
-      : "<i>—</i>";
-    detail.classList.remove("detail-empty");
-    detail.innerHTML = `
-      <div class="detail-row"><div class="k">Label</div><div class="v"><b>${escapeHtml(d.label)}</b></div></div>
-      <div class="detail-row"><div class="k">ID</div><div class="v"><code>${escapeHtml(d.id)}</code></div></div>
-      <div class="detail-row"><div class="k">Kind</div><div class="v">${escapeHtml(d.kind)}</div></div>
-      <div class="detail-row"><div class="k">Language</div><div class="v">${escapeHtml(d.language)}</div></div>
-      <div class="detail-row"><div class="k">Source</div><div class="v">${fileLink}</div></div>
-      <div class="detail-row"><div class="k">Degree</div><div class="v">${d.degree}</div></div>
-      <div class="detail-row"><div class="k">Neighbors (${neighbors.length})</div></div>
-      <ul class="neighbors">
-        ${neighbors.slice(0, 30).map(l => {
-          const s = typeof l.source === "object" ? l.source : nodesById.get(l.source);
-          const t = typeof l.target === "object" ? l.target : nodesById.get(l.target);
-          const other = s.id === d.id ? t : s;
-          const arrow = s.id === d.id ? "→" : "←";
-          return `<li><span class="rel">${escapeHtml(l.relation)} ${arrow}</span> ${escapeHtml(other.label)}</li>`;
-        }).join("")}
-      </ul>
-    `;
-  }
-
-  // ── Toolbar ─────────────────────────────────────────────────────────────
-  let pinning = false;
-  document.getElementById("fit").addEventListener("click", fit);
-  document.getElementById("reheat").addEventListener("click", () => sim.alpha(1).restart());
-  document.getElementById("freeze").addEventListener("click", () => {
-    pinning = !pinning;
-    if (!pinning) {
-      nodes.forEach(n => { n.fx = null; n.fy = null; });
-      sim.alpha(0.3).restart();
+      highlight = new Set();
+      highlightOn = false;
     } else {
-      nodes.forEach(n => { n.fx = n.x; n.fy = n.y; });
+      highlight = new Set();
+      graph.forEachNode((id, attrs) => {
+        if ((attrs.label || "").toLowerCase().includes(q) ||
+            id.toLowerCase().includes(q)) {
+          highlight.add(id);
+        }
+      });
+      highlightOn = true;
     }
+    renderer.refresh();
   });
 
-  function fit() {
-    const visibleNodes = nodes.filter(nodeVisible);
-    if (!visibleNodes.length) return;
-    const xs = visibleNodes.map(n => n.x), ys = visibleNodes.map(n => n.y);
-    const minX = Math.min(...xs), maxX = Math.max(...xs);
-    const minY = Math.min(...ys), maxY = Math.max(...ys);
-    const width = svg.node().clientWidth, height = svg.node().clientHeight;
-    const dx = maxX - minX || 1, dy = maxY - minY || 1;
-    const scale = 0.9 / Math.max(dx / width, dy / height);
-    const tx = width / 2 - (minX + maxX) / 2 * scale;
-    const ty = height / 2 - (minY + maxY) / 2 * scale;
-    svg.transition().duration(500).call(
-      zoom.transform,
-      d3.zoomIdentity.translate(tx, ty).scale(Math.min(scale, 3))
-    );
-  }
-  // First fit once the layout settles.
-  setTimeout(fit, 1500);
-
-  // ── Helpers ─────────────────────────────────────────────────────────────
+  // ── Click → detail panel ───────────────────────────────────────────
   function escapeHtml(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
-  function shorten(path) {
-    const parts = String(path).split("/");
-    return parts.length > 4 ? ".../" + parts.slice(-3).join("/") : path;
+  function shorten(p) {
+    const parts = String(p).split("/");
+    return parts.length > 4 ? ".../" + parts.slice(-3).join("/") : p;
   }
+
+  function showDetail(id) {
+    const attrs = graph.getNodeAttributes(id);
+    const out = [];
+    out.push(`<div class="detail-row"><div class="k">Label</div>` +
+             `<div class="v"><b>${escapeHtml(attrs.label)}</b></div></div>`);
+    out.push(`<div class="detail-row"><div class="k">ID</div>` +
+             `<div class="v"><code>${escapeHtml(id)}</code></div></div>`);
+    out.push(`<div class="detail-row"><div class="k">Kind</div>` +
+             `<div class="v">${escapeHtml(attrs.kind)}</div></div>`);
+    out.push(`<div class="detail-row"><div class="k">Language</div>` +
+             `<div class="v">${escapeHtml(attrs.language)}</div></div>`);
+    if (attrs.source_file) {
+      const loc = attrs.source_location;
+      const ln = loc ? loc.replace(/^L/, "") : "";
+      const href = "vscode://file/" + encodeURI(attrs.source_file) +
+                   (ln ? ":" + ln : "");
+      out.push(`<div class="detail-row"><div class="k">Source</div>` +
+               `<div class="v"><a href="${href}">${escapeHtml(shorten(attrs.source_file))}` +
+               (loc ? ":" + escapeHtml(loc) : "") + `</a></div></div>`);
+    }
+    out.push(`<div class="detail-row"><div class="k">Degree</div>` +
+             `<div class="v">${attrs.degree}</div></div>`);
+    out.push(`<div class="detail-row"><div class="k">Community</div>` +
+             `<div class="v">${attrs.community}</div></div>`);
+
+    // Neighbours
+    const neighbours = [];
+    graph.forEachEdge(id, (eid, eattrs, s, t) => {
+      const otherId = s === id ? t : s;
+      const other = graph.getNodeAttributes(otherId);
+      const arrow = s === id ? "→" : "←";
+      neighbours.push(
+        `<li><span class="rel">${escapeHtml(eattrs.relation)} ${arrow}</span> ` +
+        `${escapeHtml(other.label)}</li>`,
+      );
+      if (neighbours.length >= 40) return;
+    });
+    if (neighbours.length) {
+      out.push(`<div class="detail-row"><div class="k">Neighbors</div></div>`);
+      out.push(`<ul class="neighbors">${neighbours.join("")}</ul>`);
+    }
+
+    const detail = document.getElementById("detail");
+    detail.classList.remove("detail-empty");
+    detail.innerHTML = out.join("");
+  }
+
+  renderer.on("clickNode", ({ node }) => showDetail(node));
+  renderer.on("clickStage", () => {
+    const d = document.getElementById("detail");
+    d.classList.add("detail-empty");
+    d.innerHTML = "Click a node to inspect.";
+  });
+
+  // ── Toolbar ────────────────────────────────────────────────────────
+  document.getElementById("fit").addEventListener("click", () => {
+    renderer.getCamera().animatedReset();
+  });
+  document.getElementById("reset").addEventListener("click", () => {
+    DATA.languages.forEach(l => enabled.language.add(l));
+    DATA.kinds.forEach(k => enabled.kind.add(k));
+    DATA.confidences.forEach(c => enabled.confidence.add(c));
+    document.querySelectorAll(".filter-row input[type=checkbox]")
+      .forEach(cb => cb.checked = true);
+    searchInput.value = "";
+    highlight = new Set();
+    highlightOn = false;
+    renderer.refresh();
+  });
 })();
 </script>
 </body>
