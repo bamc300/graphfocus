@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "graphfocus"
-version = "0.1.0"
+version = "0.1.1"
 description = "Turn any folder of code into a queryable knowledge graph. Multi-language AST extraction with plugin architecture and MCP server for AI tools."
 readme = "README.md"
 license = { text = "MIT" }
@@ -74,7 +74,9 @@ semantic = [
     "openai>=1.0",
 ]
 community = [
-    "graspologic>=3.0",
+    # python-igraph ships wheels for every supported Python (incl. 3.14)
+    # and provides Leiden via Graph.community_leiden().
+    "igraph>=0.11",
 ]
 ai = [
     # MCP server so AI tools (Claude Desktop, Trae, Cursor, Windsurf) can
