@@ -232,6 +232,125 @@ def serve(host: str, port: int) -> None:
     uvicorn.run("graphfocus.api.app:app", host=host, port=port, reload=True)
 
 
+@main.command(name="install-mcp")
+@click.option("--scan", is_flag=True, help="Only scan; don't modify any file")
+@click.option("--yes", "-y", "auto_yes", is_flag=True, help="Skip the confirmation prompt")
+@click.option("--replace", is_flag=True,
+              help="Overwrite an existing graphfocus entry if present")
+@click.option("--cwd", "project_cwd", type=click.Path(file_okay=False), default=None,
+              help="Project directory the MCP server should default to "
+                   "(default: current dir)")
+@click.option("--uninstall", is_flag=True,
+              help="Remove the graphfocus entry from every detected tool")
+def install_mcp(scan: bool, auto_yes: bool, replace: bool,
+                project_cwd: str | None, uninstall: bool) -> None:
+    """Detect installed AI IDEs (Trae AI, Cursor, Claude Desktop, …) and
+    wire up the GraphFocus MCP server in each one's configuration.
+
+    Run this from the root of the project you want the IDEs to query. The
+    command shows what was detected, what it would change, and asks for
+    confirmation before touching any file. Existing entries are preserved;
+    each modified config gets a .bak backup next to it.
+    """
+    import shutil as _shutil
+    import sys as _sys
+
+    from graphfocus.mcp_installer import (
+        install as _install,
+    )
+    from graphfocus.mcp_installer import (
+        scan as _scan_tools,
+    )
+    from graphfocus.mcp_installer import (
+        uninstall as _uninstall,
+    )
+
+    binary = _shutil.which("graphfocus") or _sys.executable
+    cwd_abs = str(Path(project_cwd or ".").resolve())
+
+    console.print("\n[bold]GraphFocus MCP installer[/]")
+    console.print(f"  graphfocus binary: [dim]{binary}[/]")
+    console.print(f"  project cwd:       [dim]{cwd_abs}[/]\n")
+    console.print("Scanning known MCP-compatible AI tools…\n")
+
+    results = _scan_tools()
+    targets = []  # list of McpTool to act on
+
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Tool", style="cyan")
+    table.add_column("Status")
+    table.add_column("Config path", style="dim", overflow="fold")
+    for r in results:
+        if r.parse_error:
+            status = "[red]parse error[/]"
+        elif not r.installed:
+            status = "[dim]not installed[/]"
+        elif r.has_graphfocus:
+            status = "[yellow]graphfocus present[/]"
+            if not uninstall:
+                pass  # keep as targets only if --replace
+        else:
+            status = "[green]ready to add[/]"
+
+        path_str = str(r.tool.existing_path or r.tool.install_path or "—")
+        table.add_row(r.tool.name, status, path_str)
+
+        if uninstall:
+            if r.installed and r.has_graphfocus:
+                targets.append(r.tool)
+        else:
+            if not r.installed:
+                continue
+            if r.parse_error:
+                continue
+            if r.has_graphfocus and not replace:
+                continue
+            targets.append(r.tool)
+    console.print(table)
+
+    if scan:
+        console.print("\n[dim]--scan: no changes made.[/]")
+        return
+
+    if not targets:
+        console.print(
+            "\n[yellow]Nothing to do — every detected tool already has the "
+            "graphfocus entry, or no tools were found.[/]\n"
+            "Pass [bold]--replace[/] to overwrite existing entries, or "
+            "[bold]--uninstall[/] to remove them."
+        )
+        return
+
+    action_word = "remove" if uninstall else "add"
+    console.print(
+        f"\nWill {action_word} the graphfocus entry in [bold]{len(targets)}[/] tool(s):"
+    )
+    for t in targets:
+        console.print(f"  • {t.name} → [dim]{t.install_path}[/]")
+
+    if not auto_yes and not click.confirm("\nProceed?", default=True):
+        console.print("[yellow]Cancelled.[/]")
+        return
+
+    console.print()
+    for tool in targets:
+        if uninstall:
+            res = _uninstall(tool)
+        else:
+            res = _install(tool, command=binary, cwd=cwd_abs, replace=replace)
+        if res.action in ("added", "replaced"):
+            console.print(f"  [green]✓[/] {res.tool_name}: {res.action} ({res.path})")
+        elif res.action == "error":
+            console.print(f"  [red]✗[/] {res.tool_name}: {res.detail}")
+        else:
+            console.print(f"  [dim]·[/] {res.tool_name}: {res.detail}")
+
+    console.print(
+        "\n[bold]Done.[/] Restart your AI tool(s) so they pick up the new "
+        "MCP server."
+    )
+
+
 @main.command()
 @click.option("--graph", "graph_path", type=click.Path(exists=False),
               help="Path to graph.json (defaults to ./graphfocus-out/graph.json "
