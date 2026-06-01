@@ -353,6 +353,167 @@ def build_server(graph_path: Path) -> FastMCP:
         }
 
     @mcp.tool()
+    def get_context_pack(
+        symbol: str,
+        depth_callers: int = 2,
+        depth_callees: int = 2,
+        limit_per_section: int = 25,
+    ) -> dict:
+        """Bundle everything an LLM usually wants about a symbol into one call.
+
+        Resolves ``symbol`` (id or label), then returns the node plus its
+        callers (up to ``depth_callers`` hops in), its callees (up to
+        ``depth_callees`` hops out), its immediate neighbors of any other
+        relation, and a list of the community siblings. Designed to replace
+        what would otherwise be 4-6 separate MCP calls.
+
+        Args:
+            symbol: node id, exact label, or substring (best match wins)
+            depth_callers: how far back the caller chain reaches
+            depth_callees: how far down the callee chain reaches
+            limit_per_section: cap on each list to keep responses small
+        """
+        store.ensure_loaded()
+
+        # Resolve symbol → node
+        target = store.by_id(symbol)
+        if target is None:
+            q = symbol.lower().strip("()")
+            for n in store.nodes:
+                label = n["label"].lower().strip("()").lstrip(".")
+                if label == q:
+                    target = n
+                    break
+            if target is None:
+                for n in store.nodes:
+                    if q in n["label"].lower() or q in n["id"].lower():
+                        target = n
+                        break
+        if target is None:
+            return {"error": f"symbol not found: {symbol}"}
+
+        # BFS-like collection of callers / callees.
+        def _trace(start: str, direction: str, depth: int) -> list[dict]:
+            seen = {start}
+            collected: list[dict] = []
+            frontier = deque([(start, 0)])
+            while frontier and len(collected) < limit_per_section:
+                cur, level = frontier.popleft()
+                if level >= depth:
+                    continue
+                edges = (
+                    store.incoming(cur) if direction == "in" else store.outgoing(cur)
+                )
+                for e in edges:
+                    if e["relation"] != "calls":
+                        continue
+                    other_id = e["source"] if direction == "in" else e["target"]
+                    if other_id in seen:
+                        continue
+                    seen.add(other_id)
+                    other = store.by_id(other_id)
+                    if other is None:
+                        continue
+                    collected.append({
+                        **_trim_node(other),
+                        "hops": level + 1,
+                        "via": e["relation"],
+                    })
+                    frontier.append((other_id, level + 1))
+                    if len(collected) >= limit_per_section:
+                        break
+            return collected
+
+        callers = _trace(target["id"], "in", depth_callers)
+        callees = _trace(target["id"], "out", depth_callees)
+
+        # Immediate neighbors via non-"calls" relations.
+        neighbors: list[dict] = []
+        seen_neighbors: set[str] = set()
+        for e in store.outgoing(target["id"]) + store.incoming(target["id"]):
+            if e["relation"] == "calls":
+                continue
+            other_id = e["target"] if e["source"] == target["id"] else e["source"]
+            if other_id in seen_neighbors:
+                continue
+            seen_neighbors.add(other_id)
+            other = store.by_id(other_id)
+            if other is None:
+                continue
+            arrow = "→" if e["source"] == target["id"] else "←"
+            neighbors.append({
+                **_trim_node(other),
+                "via": f"{arrow} {e['relation']}",
+            })
+            if len(neighbors) >= limit_per_section:
+                break
+
+        # Community siblings (other top-degree nodes in the same community).
+        community_id = target.get("community", 0)
+        siblings: list[dict] = []
+        if community_id is not None:
+            scored = [
+                (n, len(store.outgoing(n["id"])) + len(store.incoming(n["id"])))
+                for n in store.nodes
+                if n.get("community") == community_id and n["id"] != target["id"]
+            ]
+            scored.sort(key=lambda kv: -kv[1])
+            siblings = [_trim_node(n) for n, _ in scored[:limit_per_section]]
+
+        return {
+            "symbol": _trim_node(target),
+            "callers": callers,            # who reaches in
+            "callees": callees,            # what it reaches out to
+            "neighbors": neighbors,        # contains/extends/has_field/maps_to/etc.
+            "community_id": community_id,
+            "community_siblings": siblings,
+            "summary": {
+                "total_callers": len(callers),
+                "total_callees": len(callees),
+                "total_neighbors": len(neighbors),
+                "community_size": len(siblings) + 1,
+            },
+        }
+
+    @mcp.tool()
+    def hot_paths(top_n: int = 20, relation: str = "calls") -> dict:
+        """Return the most-traveled nodes (highest degree) of a relation.
+
+        Useful for onboarding ("what are the most central pieces of this
+        codebase?") and for finding god-nodes that are candidates for
+        refactoring. Defaults to 'calls' edges so you see the busiest
+        functions; pass relation='contains' to see the largest containers
+        instead.
+        """
+        store.ensure_loaded()
+        rel = relation
+        in_count: dict[str, int] = {}
+        out_count: dict[str, int] = {}
+        for e in store.edges:
+            if e["relation"] != rel:
+                continue
+            in_count[e["target"]] = in_count.get(e["target"], 0) + 1
+            out_count[e["source"]] = out_count.get(e["source"], 0) + 1
+
+        ranked: list[tuple[str, int, int]] = []
+        for nid in set(in_count) | set(out_count):
+            ranked.append((nid, in_count.get(nid, 0), out_count.get(nid, 0)))
+        ranked.sort(key=lambda t: -(t[1] + t[2]))
+
+        results = []
+        for nid, ic, oc in ranked[:top_n]:
+            node = store.by_id(nid)
+            if node is None:
+                continue
+            results.append({
+                **_trim_node(node),
+                "incoming_count": ic,
+                "outgoing_count": oc,
+                "total_count": ic + oc,
+            })
+        return {"relation": rel, "results": results}
+
+    @mcp.tool()
     def cross_language_links() -> dict:
         """Return only edges that connect nodes across different languages.
 

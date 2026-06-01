@@ -170,6 +170,34 @@ class TestMCPTools:
         assert "calls" in structured["by_relation"]
 
     @pytest.mark.asyncio
+    async def test_get_context_pack(self, server):
+        result = await server.call_tool("get_context_pack", {"symbol": "py_handler"})
+        structured = json.loads(result[0].text)
+        assert structured["symbol"]["id"] == "py_handler"
+        # py_handler calls py_validate → callees should contain it.
+        callee_ids = {c["id"] for c in structured["callees"]}
+        assert "py_validate" in callee_ids
+        # py_main contains py_handler → neighbor section has it.
+        neighbor_ids = {n["id"] for n in structured["neighbors"]}
+        assert "py_main" in neighbor_ids
+        assert "summary" in structured
+
+    @pytest.mark.asyncio
+    async def test_get_context_pack_missing_symbol(self, server):
+        result = await server.call_tool("get_context_pack", {"symbol": "nope_xyz"})
+        structured = json.loads(result[0].text)
+        assert "error" in structured
+
+    @pytest.mark.asyncio
+    async def test_hot_paths_finds_central_nodes(self, server):
+        result = await server.call_tool("hot_paths", {"top_n": 5})
+        structured = json.loads(result[0].text)
+        assert "results" in structured
+        # py_validate has 1 incoming call edge → must appear when relation=calls.
+        ids = {r["id"] for r in structured["results"]}
+        assert "py_validate" in ids
+
+    @pytest.mark.asyncio
     async def test_cross_language_links(self, server):
         result = await server.call_tool("cross_language_links", {})
         structured = json.loads(result[0].text)
