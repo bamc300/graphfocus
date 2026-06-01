@@ -162,6 +162,13 @@ class ExtractorRegistry:
         except ImportError as e:
             logger.debug(f"R extractor not available: {e}")
 
+        try:
+            from graphfocus.extractors.markdown_extractor import MarkdownExtractor
+
+            extractor_classes.append(MarkdownExtractor)
+        except ImportError as e:
+            logger.debug(f"Markdown extractor not available: {e}")
+
         # Instantiate and register
         for cls in extractor_classes:
             try:
