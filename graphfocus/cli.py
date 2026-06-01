@@ -217,6 +217,87 @@ def path(source: str, target: str) -> None:
     console.print(f"[yellow]Path finding coming soon: {source} → {target}[/]")
 
 
+@main.command()
+@click.argument("path", type=click.Path(exists=True, file_okay=False), default=".")
+@click.option("--ai", "ai_summary", is_flag=True,
+              help="Also refresh AI_SUMMARY.md on every change")
+@click.option("--obsidian", is_flag=True, help="Also refresh the Obsidian vault")
+@click.option("--no-viz", is_flag=True, help="Skip HTML viz regeneration")
+@click.option("--debounce", default=0.8, type=float,
+              help="Seconds to wait after the last change before re-analyzing")
+@click.option("--output", "-o", type=click.Path(), default="graphfocus-out")
+def watch(path: str, ai_summary: bool, obsidian: bool, no_viz: bool,
+          debounce: float, output: str) -> None:
+    """Re-analyze PATH automatically whenever a source file changes.
+
+    Uses the SQLite cache so only changed files are re-extracted — typical
+    incremental cycles complete in under a second. Press Ctrl+C to stop.
+    """
+    try:
+        from watchfiles import watch as _watch
+    except ImportError:
+        console.print(
+            "[red]watchfiles not installed. "
+            "Run: pip install 'graphfocus[api]'[/]"
+        )
+        return
+
+    import subprocess
+
+    watched = Path(path).resolve()
+    out_dir = Path(output).resolve()
+
+    def _run_analyze() -> None:
+        args = [
+            "graphfocus", "analyze", str(watched),
+            "--update", "--no-semantic", "-o", str(out_dir),
+        ]
+        if ai_summary:
+            args.append("--ai")
+        if obsidian:
+            args.append("--obsidian")
+        if no_viz:
+            args.append("--no-viz")
+        try:
+            subprocess.run(args, check=False)
+        except FileNotFoundError:
+            # Fallback for when 'graphfocus' isn't on PATH (e.g. inside venv).
+            import sys as _sys
+            subprocess.run([_sys.executable, "-m", "graphfocus", *args[1:]],
+                           check=False)
+
+    console.print(f"[bold]Watching[/] [cyan]{watched}[/] — Ctrl+C to stop\n")
+    console.print("[dim]Running first analysis…[/]")
+    _run_analyze()
+    console.print("\n[bold green]Ready. Listening for changes…[/]\n")
+
+    # Translate `debounce` seconds → milliseconds for watchfiles.
+    step_ms = max(50, int(debounce * 1000))
+
+    # Ignore paths inside the output directory so we don't loop forever.
+    def _filter(_change, p: str) -> bool:  # noqa: ARG001
+        try:
+            Path(p).resolve().relative_to(out_dir)
+            return False
+        except ValueError:
+            return True
+
+    try:
+        for changes in _watch(
+            watched,
+            step=step_ms,
+            watch_filter=_filter,
+            recursive=True,
+            rust_timeout=0,
+        ):
+            files = sorted({Path(p).name for _, p in changes})[:5]
+            console.print(f"[dim]Detected change in: {', '.join(files)} …[/]")
+            _run_analyze()
+            console.print("[bold green]Ready.[/]\n")
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped.[/]")
+
+
 @main.command(name="serve-viz")
 @click.option("--port", "-p", default=8765, type=int,
               help="Local port to serve on (default: 8765)")
