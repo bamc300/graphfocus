@@ -140,6 +140,16 @@ def analyze(
     export_json(all_nodes, all_edges, config.output_dir / "graph.json")
     console.print(f"[green]✓ Graph saved to {config.output_dir / 'graph.json'}[/]")
 
+    # Step 3b: TF-IDF semantic index for find_semantic queries.
+    from graphfocus.semantic_index import build_index, save_index
+
+    index = build_index([n.to_dict() for n in all_nodes])
+    save_index(index, config.output_dir / "semantic.json")
+    console.print(
+        f"[green]✓ Semantic index ({len(index['idf'])} tokens, "
+        f"{len(index['vectors'])} docs)[/]"
+    )
+
     from graphfocus.output.report import generate_report
 
     generate_report(all_nodes, all_edges, detection, config.output_dir / "GRAPH_REPORT.md")
@@ -624,6 +634,69 @@ def neighbors(node_id: str, depth: int, direction: str, graph_path: str) -> None
             continue
         table.add_row(n["label"], str(n.get("kind") or "-"),
                       str(n.get("language") or "-"), n["id"])
+    console.print(table)
+
+
+@main.command()
+@click.argument("query")
+@click.option("--limit", default=10, type=int)
+@click.option("--language", default=None)
+@click.option("--kind", default=None)
+@click.option("--graph", "graph_path", type=click.Path(exists=False),
+              default="graphfocus-out/graph.json")
+def semantic(query: str, limit: int, language: str | None,
+             kind: str | None, graph_path: str) -> None:
+    """TF-IDF semantic search over node labels and metadata.
+
+    Unlike 'graphfocus find' (substring), this scores nodes by how
+    similar their tokens are to the query in TF-IDF space, so a query
+    like 'auth user' returns nodes about authentication and users even
+    when their labels are spelled differently.
+    """
+    from graphfocus.mcp_server import GraphStore
+    from graphfocus.semantic_index import filter_by, load_index, search
+
+    g_path = Path(graph_path)
+    store = GraphStore(g_path)
+    try:
+        store.ensure_loaded()
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/]")
+        return
+
+    index_path = g_path.with_name("semantic.json")
+    index = load_index(index_path)
+    if index is None:
+        console.print(
+            f"[red]No semantic index at {index_path}.[/]\n"
+            "[yellow]Run 'graphfocus analyze .' once to build it.[/]"
+        )
+        return
+
+    matches = search(index, query, limit=limit * 3)
+    nodes_by_id = {n["id"]: n for n in store.nodes}
+    matches = filter_by(matches, nodes_by_id, language=language, kind=kind)[:limit]
+
+    if not matches:
+        console.print(f"[yellow]No matches for '{query}'[/]")
+        return
+
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Score", style="dim", justify="right")
+    table.add_column("Label", style="cyan")
+    table.add_column("Kind")
+    table.add_column("Language", style="green")
+    table.add_column("Source", style="dim", overflow="fold")
+    for nid, score in matches:
+        n = nodes_by_id[nid]
+        src = n.get("source_file", "") or ""
+        loc = n.get("source_location") or ""
+        if src and loc:
+            src = f"{src}:{loc}"
+        table.add_row(
+            f"{score:.2f}", n["label"], str(n.get("kind") or "-"),
+            str(n.get("language") or "-"), src,
+        )
     console.print(table)
 
 

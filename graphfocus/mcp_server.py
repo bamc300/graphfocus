@@ -100,7 +100,7 @@ def _trim_node(n: dict) -> dict:
     return out
 
 
-def _trim_edge(e: dict, store: GraphStore) -> dict:
+def _trim_edge(e: dict) -> dict:
     return {
         "source": e["source"],
         "target": e["target"],
@@ -165,13 +165,13 @@ def build_server(graph_path: Path) -> FastMCP:
         return {
             "node": node,
             "outgoing": [
-                {**_trim_edge(e, store),
+                {**_trim_edge(e),
                  "target_label": store.by_id(e["target"])["label"]
                  if store.by_id(e["target"]) else None}
                 for e in store.outgoing(node_id)
             ],
             "incoming": [
-                {**_trim_edge(e, store),
+                {**_trim_edge(e),
                  "source_label": store.by_id(e["source"])["label"]
                  if store.by_id(e["source"]) else None}
                 for e in store.incoming(node_id)
@@ -224,7 +224,7 @@ def build_server(graph_path: Path) -> FastMCP:
             "root": node_id,
             "nodes": [_trim_node(store.by_id(nid))
                       for nid in visited if store.by_id(nid)],
-            "edges": [_trim_edge(e, store) for e in collected_edges],
+            "edges": [_trim_edge(e) for e in collected_edges],
         }
 
     @mcp.tool()
@@ -260,7 +260,7 @@ def build_server(graph_path: Path) -> FastMCP:
                 {
                     "caller": _trim_node(store.by_id(e["source"])
                                           or {"id": e["source"], "label": e["source"]}),
-                    "edge": _trim_edge(e, store),
+                    "edge": _trim_edge(e),
                 }
                 for e in store.incoming(t["id"])
                 if e["relation"] == "calls"
@@ -313,7 +313,7 @@ def build_server(graph_path: Path) -> FastMCP:
             if link is None:
                 break
             cur = link[0]
-            path_edges.append(_trim_edge(link[1], store))
+            path_edges.append(_trim_edge(link[1]))
         chain.reverse()
         path_edges.reverse()
         path_nodes = [_trim_node(store.by_id(nid))
@@ -350,6 +350,49 @@ def build_server(graph_path: Path) -> FastMCP:
             "total_edges": len(store.edges),
             "by_kind": dict(sorted(kinds.items(), key=lambda kv: -kv[1])),
             "by_relation": dict(sorted(relations.items(), key=lambda kv: -kv[1])),
+        }
+
+    @mcp.tool()
+    def find_semantic(
+        query: str,
+        limit: int = 10,
+        language: str | None = None,
+        kind: str | None = None,
+    ) -> dict:
+        """Score nodes by TF-IDF similarity to the query (semantic-ish).
+
+        Better than ``find_symbol`` for natural-language queries like
+        ``"authentication logic"``: tokens are matched even when the
+        node's label doesn't contain them literally (CamelCase /
+        snake_case splitting + IDF weighting).
+
+        Args:
+            query: free text, e.g. "user payment flow"
+            limit: max results (default 10)
+            language: optional filter
+            kind: optional filter
+        """
+        store.ensure_loaded()
+        from graphfocus.semantic_index import filter_by, load_index, search
+
+        index_path = store.path.with_name("semantic.json")
+        index = load_index(index_path)
+        if index is None:
+            return {
+                "error": (
+                    "no semantic.json next to the graph file — re-run "
+                    "'graphfocus analyze' to build the index"
+                ),
+            }
+        nodes_by_id = {n["id"]: n for n in store.nodes}
+        raw = search(index, query, limit=limit * 3)
+        filtered = filter_by(raw, nodes_by_id, language=language, kind=kind)[:limit]
+        return {
+            "query": query,
+            "results": [
+                {**_trim_node(nodes_by_id[nid]), "score": round(score, 4)}
+                for nid, score in filtered
+            ],
         }
 
     @mcp.tool()
@@ -529,7 +572,7 @@ def build_server(graph_path: Path) -> FastMCP:
                 continue
             if src.get("language") != tgt.get("language") and src.get("language") and tgt.get("language"):
                 out.append({
-                    **_trim_edge(e, store),
+                    **_trim_edge(e),
                     "source_label": src["label"],
                     "source_language": src.get("language"),
                     "target_label": tgt["label"],
