@@ -4,6 +4,23 @@ All notable changes to GraphFocus are documented here. This project uses
 [Semantic Versioning](https://semver.org/). PyPI releases are produced
 automatically by the `publish.yml` workflow on every `vX.Y.Z` tag.
 
+## [0.3.0] — 2026-06-02
+
+### Added
+- **`graphfocus diff old.json new.json`** — compare two graph snapshots
+  and print added / removed / changed nodes and edges, with a `--json`
+  mode that's friendly for CI consumption.
+- **Minimap** in `graph.html` — fixed in the bottom-right corner of the
+  viz, painted from the same pre-computed positions. Click to recentre
+  the camera; the viewport rectangle tracks the camera live.
+- **Keyboard shortcuts** in the viz: `/` focuses the search, `f` fits
+  the camera, `r` resets filters, `1`/`2`/`3` switch the Color-by
+  mode (language/kind/community), `Esc` clears.
+- **FastAPI bearer-token auth** — set `GRAPHFOCUS_API_TOKEN` in the
+  environment and every `/api/*` request requires the matching
+  `Authorization: Bearer …` header. Unset = open server (backward
+  compatible with 0.2.x deployments).
+
 ## [0.2.5] — 2026-06-02
 
 ### Added

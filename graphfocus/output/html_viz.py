@@ -316,6 +316,51 @@ _HTML_TEMPLATE = r"""<!doctype html>
   aside.right { grid-area: right; border-left: 1px solid var(--border); }
   main { grid-area: main; position: relative; overflow: hidden; }
   #sigma-container { position: absolute; inset: 0; }
+  #minimap {
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    width: 180px;
+    height: 140px;
+    background: rgba(15, 17, 23, 0.85);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    z-index: 50;
+    cursor: pointer;
+  }
+  #minimap canvas { display: block; }
+  #minimap .label {
+    position: absolute;
+    top: 4px;
+    left: 6px;
+    color: var(--muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    pointer-events: none;
+  }
+  #shortcuts {
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    color: var(--muted);
+    font-size: 11px;
+    background: rgba(15, 17, 23, 0.7);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    z-index: 50;
+  }
+  #shortcuts kbd {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 3px;
+    padding: 0 4px;
+    font-size: 10px;
+    margin: 0 2px;
+  }
   .panel-title {
     text-transform: uppercase; font-size: 11px;
     letter-spacing: 0.08em; color: var(--muted);
@@ -414,6 +459,17 @@ _HTML_TEMPLATE = r"""<!doctype html>
 <main>
   <div id="sigma-container"></div>
   <div id="loading">Loading graph…</div>
+  <div id="minimap">
+    <span class="label">minimap</span>
+    <canvas width="180" height="140"></canvas>
+  </div>
+  <div id="shortcuts">
+    <kbd>/</kbd> search
+    <kbd>f</kbd> fit
+    <kbd>r</kbd> reset
+    <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd> color
+    <kbd>esc</kbd> clear
+  </div>
 </main>
 
 <aside class="right">
@@ -690,10 +746,8 @@ _HTML_TEMPLATE = r"""<!doctype html>
   });
 
   // ── Toolbar ────────────────────────────────────────────────────────
-  document.getElementById("fit").addEventListener("click", () => {
-    renderer.getCamera().animatedReset();
-  });
-  document.getElementById("reset").addEventListener("click", () => {
+  function fitCamera() { renderer.getCamera().animatedReset(); }
+  function resetFilters() {
     DATA.languages.forEach(l => enabled.language.add(l));
     DATA.kinds.forEach(k => enabled.kind.add(k));
     DATA.confidences.forEach(c => enabled.confidence.add(c));
@@ -703,6 +757,106 @@ _HTML_TEMPLATE = r"""<!doctype html>
     highlight = new Set();
     highlightOn = false;
     renderer.refresh();
+  }
+  document.getElementById("fit").addEventListener("click", fitCamera);
+  document.getElementById("reset").addEventListener("click", resetFilters);
+
+  // ── Minimap ─────────────────────────────────────────────────────────
+  // Tiny canvas painting every node as a 1.5px dot, plus a rectangle
+  // showing what the main view is currently looking at. Click anywhere
+  // on the minimap to recentre the camera there.
+  const mmCanvas = document.querySelector("#minimap canvas");
+  const mmCtx = mmCanvas.getContext("2d");
+  const mmW = mmCanvas.width, mmH = mmCanvas.height;
+
+  // Pre-compute graph bounds for projecting positions into minimap space.
+  let mmMinX = Infinity, mmMinY = Infinity, mmMaxX = -Infinity, mmMaxY = -Infinity;
+  graph.forEachNode((_, attrs) => {
+    if (attrs.x < mmMinX) mmMinX = attrs.x;
+    if (attrs.x > mmMaxX) mmMaxX = attrs.x;
+    if (attrs.y < mmMinY) mmMinY = attrs.y;
+    if (attrs.y > mmMaxY) mmMaxY = attrs.y;
+  });
+  const mmSpanX = (mmMaxX - mmMinX) || 1;
+  const mmSpanY = (mmMaxY - mmMinY) || 1;
+  function mmProject(x, y) {
+    return [
+      ((x - mmMinX) / mmSpanX) * (mmW - 8) + 4,
+      ((y - mmMinY) / mmSpanY) * (mmH - 8) + 4,
+    ];
+  }
+  function mmUnproject(mx, my) {
+    return [
+      (mx - 4) / (mmW - 8) * mmSpanX + mmMinX,
+      (my - 4) / (mmH - 8) * mmSpanY + mmMinY,
+    ];
+  }
+  function drawMinimap() {
+    mmCtx.clearRect(0, 0, mmW, mmH);
+    mmCtx.globalAlpha = 0.85;
+    graph.forEachNode((_, attrs) => {
+      const visible =
+        enabled.language.has(attrs.language) && enabled.kind.has(attrs.kind);
+      if (!visible) return;
+      const [px, py] = mmProject(attrs.x, attrs.y);
+      mmCtx.fillStyle = colorOf(attrs, colorMode);
+      mmCtx.fillRect(px, py, 1.5, 1.5);
+    });
+    // Viewport rectangle.
+    mmCtx.globalAlpha = 1;
+    const cam = renderer.getCamera();
+    const viewport = renderer.viewportToFramedGraph({x: 0, y: 0});
+    const viewport2 = renderer.viewportToFramedGraph({
+      x: renderer.getContainer().clientWidth,
+      y: renderer.getContainer().clientHeight,
+    });
+    const [vx1, vy1] = mmProject(viewport.x, viewport.y);
+    const [vx2, vy2] = mmProject(viewport2.x, viewport2.y);
+    mmCtx.strokeStyle = "#4ea1f3";
+    mmCtx.lineWidth = 1;
+    mmCtx.strokeRect(
+      Math.min(vx1, vx2), Math.min(vy1, vy2),
+      Math.abs(vx2 - vx1), Math.abs(vy2 - vy1),
+    );
+  }
+  drawMinimap();
+  // Re-render the minimap on camera moves and filter toggles.
+  renderer.getCamera().on("updated", drawMinimap);
+  document.querySelectorAll(".filter-row input[type=checkbox]")
+    .forEach(cb => cb.addEventListener("change", drawMinimap));
+  document.getElementById("color-mode").addEventListener("change", drawMinimap);
+
+  mmCanvas.addEventListener("click", (evt) => {
+    const rect = mmCanvas.getBoundingClientRect();
+    const [gx, gy] = mmUnproject(evt.clientX - rect.left, evt.clientY - rect.top);
+    renderer.getCamera().animate({x: gx, y: gy}, {duration: 200});
+  });
+
+  // ── Keyboard shortcuts ─────────────────────────────────────────────
+  window.addEventListener("keydown", (evt) => {
+    // Don't hijack typing inside the search box.
+    if (document.activeElement && document.activeElement.tagName === "INPUT") {
+      if (evt.key === "Escape") {
+        searchInput.value = "";
+        searchInput.dispatchEvent(new Event("input"));
+        searchInput.blur();
+      }
+      return;
+    }
+    if (evt.key === "/") { evt.preventDefault(); searchInput.focus(); return; }
+    if (evt.key === "f") { fitCamera(); return; }
+    if (evt.key === "r") { resetFilters(); return; }
+    if (evt.key === "1" || evt.key === "2" || evt.key === "3") {
+      const sel = document.getElementById("color-mode");
+      sel.value = {"1": "language", "2": "kind", "3": "community"}[evt.key];
+      sel.dispatchEvent(new Event("change"));
+    }
+    if (evt.key === "Escape") {
+      // Clear selection panel.
+      const d = document.getElementById("detail");
+      d.classList.add("detail-empty");
+      d.innerHTML = "Click a node to inspect.";
+    }
   });
 })();
 </script>

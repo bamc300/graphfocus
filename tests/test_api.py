@@ -40,6 +40,47 @@ class TestHealth:
         assert "sql" in body["languages"]
 
 
+class TestBearerAuth:
+    """v0.3.0 — when GRAPHFOCUS_API_TOKEN is set every /api/* call needs it."""
+
+    def test_unauthenticated_blocked_when_token_set(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setenv("GRAPHFOCUS_API_TOKEN", "secret")
+        r = client.get("/api/health")
+        assert r.status_code == 401
+        assert "Bearer" in r.headers.get("WWW-Authenticate", "")
+
+    def test_wrong_token_forbidden(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setenv("GRAPHFOCUS_API_TOKEN", "secret")
+        r = client.get("/api/health", headers={"Authorization": "Bearer wrong"})
+        assert r.status_code == 403
+
+    def test_correct_token_passes(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setenv("GRAPHFOCUS_API_TOKEN", "secret")
+        r = client.get("/api/health", headers={"Authorization": "Bearer secret"})
+        assert r.status_code == 200
+
+    def test_no_token_means_open(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.delenv("GRAPHFOCUS_API_TOKEN", raising=False)
+        r = client.get("/api/health")
+        assert r.status_code == 200
+
+    def test_root_endpoint_reports_auth_state(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setenv("GRAPHFOCUS_API_TOKEN", "secret")
+        r = client.get("/")
+        body = r.json()
+        assert body["auth_required"] is True
+
+
 class TestAnalyzeEndpoint:
     def test_404_when_path_missing(self, client: TestClient, tmp_path: Path):
         r = client.post("/api/analyze", json={"path": str(tmp_path / "does_not_exist")})

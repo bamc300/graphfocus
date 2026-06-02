@@ -502,6 +502,83 @@ def lint(rules_path: str, graph_path: str, fail_on_violation: bool) -> None:
         sys.exit(1)
 
 
+@main.command()
+@click.argument("old_path", type=click.Path(exists=True))
+@click.argument("new_path", type=click.Path(exists=True))
+@click.option("--json", "as_json", is_flag=True,
+              help="Print the full diff as JSON instead of a human summary")
+@click.option("--limit", default=30, type=int,
+              help="Cap on items shown per section in the human summary")
+def diff(old_path: str, new_path: str, as_json: bool, limit: int) -> None:
+    """Diff two graph.json snapshots and print added / removed / changed.
+
+    Typical use is to compare 'main' against your branch in CI:
+
+        graphfocus analyze . -o before/   # on main
+        graphfocus analyze . -o after/    # on the branch
+        graphfocus diff before/graph.json after/graph.json
+    """
+    import json as _json
+
+    from graphfocus.graph.diff import diff_graphs
+
+    old = _json.loads(Path(old_path).read_text(encoding="utf-8"))
+    new = _json.loads(Path(new_path).read_text(encoding="utf-8"))
+    result = diff_graphs(old, new)
+
+    if as_json:
+        click.echo(_json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+        return
+
+    summary = result.to_dict()["summary"]
+    console.print(f"\n[bold]Graph diff[/]  [dim]{old_path} → {new_path}[/]\n")
+    console.print(
+        f"  [green]+ {summary['added_nodes']:>4} nodes[/]   "
+        f"[green]+ {summary['added_edges']:>4} edges[/]"
+    )
+    console.print(
+        f"  [red]- {summary['removed_nodes']:>4} nodes[/]   "
+        f"[red]- {summary['removed_edges']:>4} edges[/]"
+    )
+    console.print(
+        f"  [yellow]~ {summary['changed_nodes']:>4} nodes changed[/]\n"
+    )
+
+    def _section(title: str, items: list, fmt) -> None:
+        if not items:
+            return
+        console.print(
+            f"[bold]{title}[/]  [dim]({len(items)} total, "
+            f"showing first {min(limit, len(items))})[/]"
+        )
+        for item in items[:limit]:
+            console.print(f"  {fmt(item)}")
+        console.print()
+
+    _section(
+        "[green]Added nodes[/]", result.added_nodes,
+        lambda n: f"+ {n.get('label','')} "
+                  f"[{n.get('kind','-')}/{n.get('language','-')}]",
+    )
+    _section(
+        "[red]Removed nodes[/]", result.removed_nodes,
+        lambda n: f"- {n.get('label','')} "
+                  f"[{n.get('kind','-')}/{n.get('language','-')}]",
+    )
+    _section(
+        "[yellow]Changed nodes[/]", result.changed_nodes,
+        lambda c: f"~ {c.get('label','')} ({', '.join(c['changes'].keys())})",
+    )
+    _section(
+        "[green]Added edges[/]", result.added_edges,
+        lambda e: f"+ {e['source']} -[{e.get('relation','')}]-> {e['target']}",
+    )
+    _section(
+        "[red]Removed edges[/]", result.removed_edges,
+        lambda e: f"- {e['source']} -[{e.get('relation','')}]-> {e['target']}",
+    )
+
+
 @main.command(name="export-mermaid")
 @click.option("--graph", "graph_path", type=click.Path(exists=False),
               default="graphfocus-out/graph.json")
