@@ -385,6 +385,76 @@ def serve(host: str, port: int) -> None:
     uvicorn.run("graphfocus.api.app:app", host=host, port=port, reload=True)
 
 
+@main.command()
+@click.option("--rules", "rules_path", type=click.Path(exists=False),
+              default=".graphfocus.yml",
+              help="YAML file with lint rules (default: .graphfocus.yml)")
+@click.option("--graph", "graph_path", type=click.Path(exists=False),
+              default="graphfocus-out/graph.json")
+@click.option("--fail-on-violation", is_flag=True,
+              help="Exit with code 1 if any violation is found (CI-friendly)")
+def lint(rules_path: str, graph_path: str, fail_on_violation: bool) -> None:
+    """Run architecture lint rules against the graph.
+
+    See the README's 'Lint' section for the YAML schema. Common rules:
+
+      * disallow: ban edges from one selector to another
+      * require: a selector must only point to allowed selectors
+      * max_outgoing / max_incoming: cap fan-out / fan-in
+    """
+    import sys
+
+    from graphfocus.lint import evaluate, load_rules
+
+    rules_file = Path(rules_path)
+    if not rules_file.exists():
+        console.print(f"[red]No rules file at {rules_file}.[/]")
+        console.print(
+            "[yellow]Create one or pass --rules. See README §lint for examples.[/]"
+        )
+        return
+
+    g_path = Path(graph_path)
+    if not g_path.exists():
+        console.print(f"[red]No graph at {g_path}. Run 'graphfocus analyze' first.[/]")
+        return
+
+    import json as _json
+    data = _json.loads(g_path.read_text(encoding="utf-8"))
+
+    try:
+        rules = load_rules(rules_file)
+    except Exception as e:
+        console.print(f"[red]Could not parse {rules_file}: {e}[/]")
+        return
+
+    violations = evaluate(rules, data.get("nodes", []), data.get("edges", []))
+
+    if not violations:
+        console.print("[green]✓ No violations — graph satisfies all rules.[/]")
+        return
+
+    console.print(
+        f"\n[red bold]{len(violations)} violation(s) found:[/]\n"
+    )
+    by_rule: dict[str, list] = {}
+    for v in violations:
+        by_rule.setdefault(v.rule, []).append(v)
+    for rule_name, items in by_rule.items():
+        console.print(f"[bold yellow]rule:[/] {rule_name}  "
+                      f"[dim]({len(items)} violation(s))[/]")
+        for v in items[:50]:
+            console.print(f"  • {v.message}")
+            if v.location:
+                console.print(f"    [dim]{v.location}[/]")
+        if len(items) > 50:
+            console.print(f"  [dim]…and {len(items) - 50} more[/]")
+        console.print()
+
+    if fail_on_violation:
+        sys.exit(1)
+
+
 @main.command(name="export-mermaid")
 @click.option("--graph", "graph_path", type=click.Path(exists=False),
               default="graphfocus-out/graph.json")
