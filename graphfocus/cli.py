@@ -385,6 +385,59 @@ def serve(host: str, port: int) -> None:
     uvicorn.run("graphfocus.api.app:app", host=host, port=port, reload=True)
 
 
+@main.command(name="export-mermaid")
+@click.option("--graph", "graph_path", type=click.Path(exists=False),
+              default="graphfocus-out/graph.json")
+@click.option("--output", "-o", type=click.Path(),
+              default="graphfocus-out/graph.mmd",
+              help="File to write (.mmd or .md)")
+@click.option("--direction", type=click.Choice(["LR", "RL", "TB", "BT"]),
+              default="LR")
+@click.option("--max-nodes", default=150, type=int)
+@click.option("--language", default=None)
+@click.option("--kind", default=None)
+@click.option("--community", type=int, default=None)
+@click.option("--root", "roots", multiple=True,
+              help="Filter to these node ids and their neighbors (repeatable)")
+@click.option("--markdown", is_flag=True,
+              help="Wrap output in a ```mermaid fenced block")
+def export_mermaid(graph_path: str, output: str, direction: str,
+                   max_nodes: int, language: str | None, kind: str | None,
+                   community: int | None, roots: tuple[str, ...],
+                   markdown: bool) -> None:
+    """Export the graph as a Mermaid diagram for embedding in docs.
+
+    Useful for READMEs, ADRs and design docs. By default writes the
+    full graph (capped at --max-nodes by degree). Pass --language,
+    --kind, --community or --root to narrow the scope.
+    """
+    import json as _json
+
+    from graphfocus.output.mermaid_export import write_mermaid
+
+    g = Path(graph_path)
+    if not g.exists():
+        console.print(f"[red]No graph at {g}. Run 'graphfocus analyze' first.[/]")
+        return
+    data = _json.loads(g.read_text(encoding="utf-8"))
+
+    out = Path(output)
+    size = write_mermaid(
+        data.get("nodes", []),
+        data.get("edges", []),
+        out,
+        direction=direction,
+        max_nodes=max_nodes,
+        language=language,
+        kind=kind,
+        community=community,
+        roots=list(roots) if roots else None,
+        embed_in_markdown=markdown or out.suffix == ".md",
+    )
+    kb = size / 1024
+    console.print(f"[green]✓ Mermaid diagram saved to {out} ({kb:.1f} KB)[/]")
+
+
 @main.command(name="install-mcp")
 @click.option("--scan", is_flag=True, help="Only scan; don't modify any file")
 @click.option("--yes", "-y", "auto_yes", is_flag=True, help="Skip the confirmation prompt")
