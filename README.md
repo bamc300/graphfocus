@@ -8,14 +8,16 @@ Most code intelligence tools either parse only one language (so a fullstack Spri
 
 ## Features
 
-- 🌳 **19 languages with dedicated extractors** — Python, Java, TypeScript/JavaScript/React, Vue, C#, Go, Kotlin, Rust, Swift, Ruby, PHP, Scala, Lua, C, C++, Dart, R, SQL, PL/SQL
-- 🔌 **Plugin architecture** — Add new languages by implementing a single interface
-- 🔗 **Cross-language linker** — Java/C# `@Entity`/`@Table` automatically wired to SQL/PL-SQL tables
-- 🤖 **MCP server** — Plug into any MCP-compatible AI tool (Trae, Cursor, Claude Desktop…) so the LLM queries the graph directly
-- 📁 **Multiple outputs** — Interactive HTML viz, JSON, Markdown report, Obsidian vault, **AI_SUMMARY.md** (dense LLM context)
-- ⚡ **Smart caching** — SQLite-based, only re-processes changed files
-- 🚀 **FastAPI server** — REST endpoints to query the graph from any tool
-- 🧠 **Optional LLM enrichment** — Use Claude/GPT to extract semantic relationships from docs and images
+- **20 extractors** — Python, Java, TypeScript / JavaScript / React, Vue, C#, Go, Kotlin, Rust, Swift, Ruby, PHP, Scala, Lua, C, C++, Dart, R, SQL, PL/SQL, plus **Markdown / ADR** and **OpenAPI / Swagger** specs.
+- **Cross-language linker** — Java/C# `@Entity`/`@Table` automatically wired to SQL/PL-SQL tables.
+- **Plugin architecture** — add a language by implementing a single interface.
+- **Parallel `analyze`** — fans the per-file work across `ProcessPoolExecutor` with a live progress bar; SQLite cache reuses unchanged files and prunes deleted ones.
+- **MCP server** with 10 tools — `find_symbol`, `find_semantic`, `get_node`, `get_neighbors`, `find_callers`, `find_path`, `get_context_pack`, `hot_paths`, `cross_language_links`, `list_languages`, `get_stats`. Plug it into any AI IDE (Trae AI, Cursor, Claude Desktop, Windsurf, Continue.dev, Zed, VS Code Cline) with `graphfocus install-mcp`.
+- **Outputs** — `graph.json`, WebGL-rendered `graph.html` (Sigma.js, 100k+ nodes), `GRAPH_REPORT.md`, dense `AI_SUMMARY.md` for LLM context, navigable Obsidian vault, Mermaid diagrams, TF-IDF semantic index.
+- **Architecture lint** — `.graphfocus.yml` rules (`disallow`, `require`, `max_outgoing`) enforce layering in CI.
+- **File watcher** — `graphfocus watch` re-analyzes on every save so the IDE always sees fresh data.
+- **FastAPI server** — REST endpoints for non-Python clients.
+- **Optional LLM enrichment** — semantic extraction from documents.
 
 ## Install
 
@@ -54,11 +56,27 @@ graphfocus analyze . --update --ai --obsidian
 ## Query the graph from the CLI
 
 ```bash
-graphfocus find UserService                  # search by label or id
-graphfocus neighbors userservice_user 2      # explore neighborhood
+graphfocus find UserService                  # substring search
+graphfocus semantic "auth user payment"      # TF-IDF semantic search
+graphfocus neighbors userservice_user --depth 2
 graphfocus callers validate                  # who calls validate()?
 graphfocus languages                         # list active extractors
 ```
+
+## Other useful commands
+
+| Command | What it does |
+|---|---|
+| `graphfocus analyze . --update -j 4` | Incremental analyze using 4 parallel workers |
+| `graphfocus analyze . --include "src/**" --exclude "**/test_*"` | Limit the scope with globs |
+| `graphfocus watch .` | Re-analyze automatically whenever a file changes |
+| `graphfocus serve-viz` | Serve `graph.html` locally so WebGL works |
+| `graphfocus serve` | Start the FastAPI REST server |
+| `graphfocus mcp` | Launch the MCP server (used by AI IDEs) |
+| `graphfocus install-mcp` | Auto-wire the MCP server into installed AI IDEs |
+| `graphfocus export-mermaid --root <id> --markdown -o diagram.md` | Mermaid subgraph |
+| `graphfocus init` | Scaffold `.graphfocus.yml` for the lint engine |
+| `graphfocus lint --fail-on-violation` | Run architecture rules; non-zero exit on violations |
 
 ## Plug into your AI tool (MCP)
 

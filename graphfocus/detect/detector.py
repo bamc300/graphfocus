@@ -158,8 +158,18 @@ def classify_file(path: Path) -> FileType | None:
     return None
 
 
-def detect_files(root: Path) -> dict:
+def detect_files(
+    root: Path,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> dict:
     """Scan a directory tree and classify all supported files.
+
+    Args:
+        root: directory to scan.
+        include: glob patterns; if non-empty only files matching at least
+            one pattern survive (relative to ``root``).
+        exclude: glob patterns; files matching any are dropped.
 
     Returns a dict with:
         - total_files: int
@@ -169,12 +179,19 @@ def detect_files(root: Path) -> dict:
         - by_language: dict[str, int] counts per language
         - skipped_sensitive: int
     """
+    import fnmatch
+
     root = root.resolve()
     files: list[dict] = []
     by_type: dict[str, int] = {}
     by_language: dict[str, int] = {}
     total_words = 0
     skipped_sensitive = 0
+    include = include or []
+    exclude = exclude or []
+
+    def _matches(patterns: list[str], rel: str) -> bool:
+        return any(fnmatch.fnmatch(rel, p) for p in patterns)
 
     for dirpath, dirnames, filenames in os.walk(root):
         # Skip excluded directories
@@ -182,6 +199,16 @@ def detect_files(root: Path) -> dict:
 
         for filename in filenames:
             filepath = Path(dirpath) / filename
+
+            # User include/exclude globs (relative to root).
+            try:
+                rel = str(filepath.relative_to(root))
+            except ValueError:
+                rel = filename
+            if include and not _matches(include, rel):
+                continue
+            if exclude and _matches(exclude, rel):
+                continue
 
             # Skip sensitive files
             if _is_sensitive(filepath):

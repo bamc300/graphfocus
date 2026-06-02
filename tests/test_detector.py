@@ -85,3 +85,26 @@ class TestDetectFiles:
     def test_empty_directory(self, tmp_path):
         result = detect_files(tmp_path)
         assert result["total_files"] == 0
+
+    def test_include_glob(self, tmp_path):
+        (tmp_path / "app.py").write_text("import os")
+        (tmp_path / "ignore.py").write_text("import os")
+        (tmp_path / "schema.sql").write_text("CREATE TABLE t (id INT);")
+        result = detect_files(tmp_path, include=["*.sql"])
+        paths = [f["relative_path"] for f in result["files"]]
+        assert paths == ["schema.sql"]
+
+    def test_exclude_glob(self, tmp_path):
+        (tmp_path / "app.py").write_text("x = 1")
+        (tmp_path / "test_app.py").write_text("x = 1")
+        result = detect_files(tmp_path, exclude=["test_*.py"])
+        paths = sorted(f["relative_path"] for f in result["files"])
+        assert paths == ["app.py"]
+
+    def test_include_takes_precedence_over_default_languages(self, tmp_path):
+        (tmp_path / "app.py").write_text("x = 1")
+        (tmp_path / "schema.sql").write_text("CREATE TABLE t (id INT);")
+        (tmp_path / "Service.java").write_text("class Service{}")
+        result = detect_files(tmp_path, include=["*.java", "*.py"])
+        langs = sorted({f["language"] for f in result["files"]})
+        assert langs == ["java", "python"]

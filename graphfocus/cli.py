@@ -31,6 +31,12 @@ def main() -> None:
 @click.option("--obsidian", is_flag=True, help="Also export an Obsidian vault")
 @click.option("--ai", "ai_summary", is_flag=True,
               help="Also write AI_SUMMARY.md (dense Markdown for LLM context)")
+@click.option("--include", multiple=True,
+              help="Glob pattern to include (repeatable). Default: everything detected.")
+@click.option("--exclude", multiple=True,
+              help="Glob pattern to exclude (repeatable). Applied after --include.")
+@click.option("--jobs", "-j", type=int, default=0,
+              help="Parallel worker processes. 0 = all CPUs, 1 = sequential.")
 @click.option("--output", "-o", type=click.Path(), default="graphfocus-out", help="Output directory")
 def analyze(
     path: str,
@@ -40,6 +46,9 @@ def analyze(
     no_semantic: bool,
     obsidian: bool,
     ai_summary: bool,
+    include: tuple[str, ...],
+    exclude: tuple[str, ...],
+    jobs: int,
     output: str,
 ) -> None:
     """Analyze a directory and build a knowledge graph."""
@@ -55,60 +64,51 @@ def analyze(
     console.print(f"\n[bold blue]GraphFocus v{__version__}[/]")
     console.print(f"Analyzing: [cyan]{config.input_path}[/]\n")
 
-    # Step 1: Detect files
-    detection = detect_files(config.input_path)
+    # Step 1: Detect files (with optional include/exclude globs).
+    detection = detect_files(
+        config.input_path,
+        include=list(include) if include else None,
+        exclude=list(exclude) if exclude else None,
+    )
     _print_detection_summary(detection)
 
     if detection["total_files"] == 0:
         console.print("[yellow]No supported files found. Nothing to do.[/]")
         return
 
-    # Step 2: Extract with AST (optionally using the SQLite cache)
-    registry = ExtractorRegistry()
-    all_nodes = []
-    all_edges = []
+    # Step 2: Extract with AST (cache + parallel workers + progress bar).
+    from graphfocus.extractors.base import Edge as _Edge
+    from graphfocus.extractors.base import Node as _Node
+    from graphfocus.pipeline import run_extraction
+
     cache = None
-    cache_hits = 0
     if config.update:
         from graphfocus.cache.sqlite_cache import ExtractionCache
 
         cache_db = config.output_dir / ".cache.db"
         cache = ExtractionCache(cache_db)
 
-    from graphfocus.extractors.base import Edge as _Edge  # noqa: E402
-    from graphfocus.extractors.base import Node as _Node
-
-    for file_info in detection["files"]:
-        file_path = Path(file_info["path"])
-        extractor = registry.get_extractor(file_path.suffix)
-        if extractor is None:
-            continue
-
-        cached = cache.get_cached(file_path) if cache else None
-        if cached is not None:
-            all_nodes.extend(_Node.from_dict(n) for n in cached["nodes"])
-            all_edges.extend(_Edge.from_dict(e) for e in cached["edges"])
-            cache_hits += 1
-            continue
-
-        result = extractor.extract(file_path)
-        all_nodes.extend(result.nodes)
-        all_edges.extend(result.edges)
-        if cache:
-            cache.save(
-                file_path,
-                [n.to_dict() for n in result.nodes],
-                [e.to_dict() for e in result.edges],
-                extractor.language_name,
-            )
-        if result.errors:
-            for err in result.errors:
-                console.print(f"  [yellow]⚠ {file_path.name}: {err}[/]")
+    registry = ExtractorRegistry()
+    payload, cache_hits = run_extraction(
+        detection["files"],
+        registry,
+        cache=cache,
+        console=console,
+        workers=jobs,
+    )
+    all_nodes = [_Node.from_dict(n) for n in payload["nodes"]]
+    all_edges = [_Edge.from_dict(e) for e in payload["edges"]]
 
     if cache:
+        # Drop entries for files that no longer exist on disk so the
+        # graph doesn't carry around stale nodes from deleted source.
+        present = {fi["path"] for fi in detection["files"]}
+        pruned = cache.prune_missing(present)
         cache.close()
         if cache_hits:
             console.print(f"[dim]Cache: {cache_hits} files reused from previous run[/]")
+        if pruned:
+            console.print(f"[dim]Cache: {pruned} stale entries pruned[/]")
 
     console.print(f"\n[green]✓ Extracted {len(all_nodes)} nodes and {len(all_edges)} edges[/]")
 
@@ -208,23 +208,70 @@ def languages() -> None:
 
 
 @main.command()
-@click.argument("question")
-def query(question: str) -> None:
-    """Query the knowledge graph with a natural language question."""
-    graph_path = Path("graphfocus-out/graph.json")
-    if not graph_path.exists():
-        console.print("[red]No graph found. Run 'graphfocus analyze' first.[/]")
+@click.option("--force", "-f", is_flag=True,
+              help="Overwrite an existing .graphfocus.yml")
+def init(force: bool) -> None:
+    """Create a starter .graphfocus.yml with example lint rules.
+
+    Run this once at the root of a project to scaffold the architecture
+    rules. Edit the file to match your conventions, then run
+    'graphfocus lint' to check them.
+    """
+    target = Path.cwd() / ".graphfocus.yml"
+    if target.exists() and not force:
+        console.print(
+            f"[yellow]{target} already exists.[/] Use --force to overwrite.",
+        )
         return
+    target.write_text(_STARTER_RULES, encoding="utf-8")
+    console.print(f"[green]✓ Wrote {target}[/]")
+    console.print(
+        "\nEdit the rules to match your codebase, then run:\n"
+        "  [cyan]graphfocus analyze . --update[/]\n"
+        "  [cyan]graphfocus lint[/]\n\n"
+        "Use [cyan]graphfocus lint --fail-on-violation[/] in CI to fail "
+        "the build when rules break."
+    )
 
-    console.print(f"[yellow]Query support coming soon. Question: {question}[/]")
 
+_STARTER_RULES = """\
+# GraphFocus architecture rules. Edit to match your codebase, then run:
+#
+#   graphfocus analyze . --update
+#   graphfocus lint
+#
+# See https://github.com/bamc300/graphfocus#lint for the full schema.
 
-@main.command()
-@click.argument("source")
-@click.argument("target")
-def path(source: str, target: str) -> None:
-    """Find shortest path between two concepts in the graph."""
-    console.print(f"[yellow]Path finding coming soon: {source} → {target}[/]")
+rules:
+  # ── Layer rules ─────────────────────────────────────────────────────
+  # Replace with whatever your "layers" look like in this codebase.
+
+  - name: ui-must-not-touch-db
+    disallow:
+      from: {language: typescript}
+      to: {language: sql}
+
+  # ── Health limits ───────────────────────────────────────────────────
+  # Catch god-classes early.
+
+  - name: no-god-classes
+    max_outgoing: 30
+    scope: {kind: class}
+
+  - name: no-god-functions
+    max_outgoing: 20
+    scope: {kind: function}
+
+  # ── Naming hygiene ──────────────────────────────────────────────────
+  # Force the auth surface to only talk to repositories or other auth.
+
+  # - name: auth-isolation
+  #   require:
+  #     from: {name_match: "Auth"}
+  #     to_any_of:
+  #       - {name_match: "Repo"}
+  #       - {name_match: "Auth"}
+"""
 
 
 @main.command()

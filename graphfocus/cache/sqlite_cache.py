@@ -91,6 +91,33 @@ class ExtractionCache:
         self._conn.commit()
         return count
 
+    def prune_missing(self, present: set[str]) -> int:
+        """Delete cache entries whose ``file_path`` is not in ``present``.
+
+        Call this after every analyze run with the set of paths that are
+        still on disk; otherwise nodes from deleted files survive in the
+        cache and leak back into future graphs.
+
+        Returns the number of stale entries that were removed.
+        """
+        cursor = self._conn.execute("SELECT file_path FROM file_cache")
+        cached_paths = {row[0] for row in cursor.fetchall()}
+        stale = cached_paths - present
+        if not stale:
+            return 0
+        # SQLite has a parameter cap (~999); chunk if needed.
+        removed = 0
+        for chunk_start in range(0, len(stale), 500):
+            chunk = list(stale)[chunk_start:chunk_start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            self._conn.execute(
+                f"DELETE FROM file_cache WHERE file_path IN ({placeholders})",
+                chunk,
+            )
+            removed += len(chunk)
+        self._conn.commit()
+        return removed
+
     def stats(self) -> dict:
         """Get cache statistics."""
         cursor = self._conn.execute(
