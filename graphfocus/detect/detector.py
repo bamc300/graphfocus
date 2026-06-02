@@ -130,7 +130,7 @@ def _is_sensitive(path: Path) -> bool:
 def _looks_like_paper(path: Path) -> bool:
     """Heuristic: does this text file read like an academic paper?"""
     try:
-        text = path.read_text(errors="ignore")[:3000]
+        text = path.read_text(encoding="utf-8", errors="ignore")[:3000]
         hits = sum(1 for p in _PAPER_SIGNALS if p.search(text))
         return hits >= _PAPER_SIGNAL_THRESHOLD
     except Exception:
@@ -230,7 +230,7 @@ def detect_files(
             # Estimate words for text files
             if file_type in (FileType.CODE, FileType.DOCUMENT):
                 try:
-                    text = filepath.read_text(errors="ignore")
+                    text = filepath.read_text(encoding="utf-8", errors="ignore")
                     total_words += len(text.split())
                 except Exception:
                     pass

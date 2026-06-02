@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "graphfocus"
-version = "0.3.0"
+version = "0.3.1"
 description = "Turn any folder of code into a queryable knowledge graph. Multi-language AST extraction with plugin architecture and MCP server for AI tools."
 readme = "README.md"
 license = { text = "MIT" }

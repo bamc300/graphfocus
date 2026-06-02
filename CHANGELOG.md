@@ -4,6 +4,24 @@ All notable changes to GraphFocus are documented here. This project uses
 [Semantic Versioning](https://semver.org/). PyPI releases are produced
 automatically by the `publish.yml` workflow on every `vX.Y.Z` tag.
 
+## [0.3.1] — 2026-06-02
+
+### Fixed
+- **Windows crash on `analyze`**: every output writer (`graph.json`,
+  `GRAPH_REPORT.md`) and every source reader (SQL / PL-SQL extractors,
+  detector heuristics, FastAPI graph route) now forces
+  ``encoding="utf-8"`` explicitly. Without this, ``Path.write_text``
+  defaults to ``cp1252`` on Windows and crashes the moment a label
+  contains a non-Latin-1 character such as ``→`` (U+2192):
+  ``UnicodeEncodeError: 'charmap' codec can't encode character
+  '\\u2192' ...``. The other writers (Obsidian, AI summary, Mermaid,
+  HTML viz, semantic index, MCP installer) already passed the encoding.
+
+### Added
+- ``tests/test_unicode_io.py`` — a regression suite that re-runs every
+  output writer with a node whose label contains ``→`` and asserts the
+  resulting file decodes cleanly as UTF-8.
+
 ## [0.3.0] — 2026-06-02
 
 ### Added

@@ -16,7 +16,7 @@ def _load_graph(graph_path: Path = _DEFAULT_GRAPH) -> dict:
     """Load graph from JSON file."""
     if not graph_path.exists():
         raise HTTPException(status_code=404, detail="No graph found. Run analyze first.")
-    return json.loads(graph_path.read_text())
+    return json.loads(graph_path.read_text(encoding="utf-8"))
 
 
 @router.get("/graph")

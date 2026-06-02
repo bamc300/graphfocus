@@ -113,4 +113,6 @@ def generate_report(
 
     lines.append("")
 
-    output_path.write_text("\n".join(lines))
+    # UTF-8 because the report can carry Unicode labels (arrows, accents).
+    # write_text() defaults to cp1252 on Windows otherwise.
+    output_path.write_text("\n".join(lines), encoding="utf-8")

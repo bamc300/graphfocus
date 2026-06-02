@@ -98,7 +98,7 @@ class SQLExtractor(LanguageExtractor):
 
     def extract(self, path: Path) -> ExtractionResult:
         try:
-            source = path.read_text(errors="ignore")
+            source = path.read_text(encoding="utf-8", errors="ignore")
         except Exception as e:
             return ExtractionResult(errors=[f"Read error: {e}"])
 

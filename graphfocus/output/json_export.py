@@ -35,4 +35,10 @@ def export_json(
         },
     }
 
-    output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    # Always write UTF-8 — node labels may contain arrows (→), Unicode
+    # punctuation and non-ASCII identifiers. On Windows write_text()
+    # otherwise defaults to cp1252 and crashes.
+    output_path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
