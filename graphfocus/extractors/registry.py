@@ -169,6 +169,13 @@ class ExtractorRegistry:
         except ImportError as e:
             logger.debug(f"Markdown extractor not available: {e}")
 
+        try:
+            from graphfocus.extractors.openapi_extractor import OpenAPIExtractor
+
+            extractor_classes.append(OpenAPIExtractor)
+        except ImportError as e:
+            logger.debug(f"OpenAPI extractor not available: {e}")
+
         # Instantiate and register
         for cls in extractor_classes:
             try:
